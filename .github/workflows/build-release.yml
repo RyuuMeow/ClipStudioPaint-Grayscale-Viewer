@@ -1,0 +1,55 @@
+name: Windows Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.9.0'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+
+      - name: Build Project
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --config Release
+
+      - name: Deploy Qt Dependencies
+        run: |
+          mkdir deploy
+          copy build\bin\CSP-Grayscale-Viewer.exe deploy\
+          copy build\bin\CSP-Grayscale-Viewer_Console.exe deploy\
+          windeployqt --release --no-translations --no-opengl-sw deploy\CSP-Grayscale-Viewer.exe
+
+      - name: Compile Installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Output/CSP-Grayscale-Viewer_Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
