@@ -36,6 +36,11 @@ set(MAGNIFICATION_SOURCES
     src/magnification/MagnifierOverlay.cpp
 )
 
+set(D3D_SOURCES
+    src/d3d/D3DOverlayRenderer.h
+    src/d3d/D3DOverlayRenderer.cpp
+)
+
 set(WINDOW_SOURCES
     src/window/FocusTracker.h
     src/window/FocusTracker.cpp
@@ -63,6 +68,7 @@ add_executable(${PROJECT_NAME} WIN32
     src/main.cpp
     ${CORE_SOURCES}
     ${MAGNIFICATION_SOURCES}
+    ${D3D_SOURCES}
     ${WINDOW_SOURCES}
     ${INPUT_SOURCES}
     ${UTIL_SOURCES}
@@ -86,6 +92,10 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     shell32
     dwmapi
     winmm
+    d3d11
+    dxgi
+    d3dcompiler
+    dcomp
 )
 
 # ─── Console fallback (no Qt) ────────────────────────────────────────
@@ -93,6 +103,7 @@ add_executable(${PROJECT_NAME}_Console
     src/main_console.cpp
     ${CORE_SOURCES}
     ${MAGNIFICATION_SOURCES}
+    ${D3D_SOURCES}
     ${WINDOW_SOURCES}
     ${INPUT_SOURCES}
     ${UTIL_SOURCES}
@@ -115,4 +126,8 @@ target_link_libraries(${PROJECT_NAME}_Console PRIVATE
     shell32
     dwmapi
     winmm
+    d3d11
+    dxgi
+    d3dcompiler
+    dcomp
 )

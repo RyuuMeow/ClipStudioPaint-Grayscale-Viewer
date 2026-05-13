@@ -10,13 +10,11 @@ namespace csp::core
 
     Application::~Application()
     {
-        if (MagOverlay.IsVisible())
-        {
-            MagOverlay.Hide();
-            MagOverlay.Detach();
-        }
+        HideActiveOverlay();
+        DetachActiveOverlay();
         FocusTracker.Stop();
         UnregisterHotkeyNow();
+        D3DOverlay.Shutdown();
         MagOverlay.Shutdown();
     }
 
@@ -100,8 +98,8 @@ namespace csp::core
                 if (fg && window::WindowFinder::IsTargetWindow(fg))
                 {
                     HWND rootHwnd = GetAncestor(fg, GA_ROOTOWNER);
-                    MagOverlay.Attach(rootHwnd ? rootHwnd : fg);
-                    MagOverlay.Show();
+                    AttachActiveOverlay(rootHwnd ? rootHwnd : fg);
+                    ShowActiveOverlay();
                     LOG_INFO(L"Applied to focused target window");
                 }
             }
@@ -113,15 +111,59 @@ namespace csp::core
         else
         {
             LOG_INFO(L"Grayscale DISABLED");
-            MagOverlay.Hide();
-            MagOverlay.Detach();
+            HideActiveOverlay();
+            DetachActiveOverlay();
         }
         NotifyState();
     }
 
     void Application::SetRefreshRate(int Fps)
     {
+        RefreshRate = Fps;
         MagOverlay.SetRefreshRate(Fps);
+        D3DOverlay.SetRefreshRate(Fps);
+    }
+
+    void Application::SetD3DRendererEnabled(bool Enabled)
+    {
+        if (bUseD3DRenderer == Enabled)
+        {
+            return;
+        }
+
+        HWND activeTarget = ActiveOverlayTargetWindow();
+        const bool shouldRestore = bIsGrayscaleEnabled && bIsTargetInFocus && activeTarget;
+
+        HideActiveOverlay();
+        DetachActiveOverlay();
+
+        if (Enabled && !D3DOverlay.IsInitialized())
+        {
+            D3DOverlay.SetRefreshRate(RefreshRate);
+            if (!D3DOverlay.Initialize())
+            {
+                LOG_ERROR(L"Failed to initialize experimental D3D renderer; keeping Magnification renderer");
+                bUseD3DRenderer = false;
+                if (shouldRestore)
+                {
+                    AttachActiveOverlay(activeTarget);
+                    ShowActiveOverlay();
+                }
+                NotifyState();
+                return;
+            }
+        }
+
+        bUseD3DRenderer = Enabled;
+        LOG_INFO(L"Renderer backend: %s", bUseD3DRenderer ? L"Direct3D experimental" : L"Magnification");
+
+        if (shouldRestore)
+        {
+            AttachActiveOverlay(activeTarget);
+            ShowActiveOverlay();
+        }
+
+        NotifyState();
     }
 
     void Application::SetHotkey(UINT Modifiers, UINT Vk)
@@ -215,27 +257,28 @@ namespace csp::core
 
         if (!bIsGrayscaleEnabled)
         {
+            NotifyState();
             return;
         }
 
         if (IsTarget && !wasTargetFocused)
         {
-            MagOverlay.Attach(Hwnd);
-            MagOverlay.Show();
+            AttachActiveOverlay(Hwnd);
+            ShowActiveOverlay();
             LOG_DEBUG(L"Target focused, overlay attached");
         }
         else if (!IsTarget && wasTargetFocused)
         {
-            MagOverlay.Hide();
+            HideActiveOverlay();
             LOG_DEBUG(L"Target unfocused, overlay hidden");
         }
         else if (IsTarget && wasTargetFocused)
         {
-            if (MagOverlay.TargetWindow() != Hwnd)
+            if (ActiveOverlayTargetWindow() != Hwnd)
             {
-                MagOverlay.Hide();
-                MagOverlay.Attach(Hwnd);
-                MagOverlay.Show();
+                HideActiveOverlay();
+                AttachActiveOverlay(Hwnd);
+                ShowActiveOverlay();
                 LOG_DEBUG(L"Switched target window, overlay re-attached");
             }
         }
@@ -270,11 +313,69 @@ namespace csp::core
         bHotkeyRegistered = false;
     }
 
+    void Application::AttachActiveOverlay(HWND Hwnd)
+    {
+        if (bUseD3DRenderer)
+        {
+            D3DOverlay.Attach(Hwnd);
+        }
+        else
+        {
+            MagOverlay.Attach(Hwnd);
+        }
+    }
+
+    void Application::DetachActiveOverlay()
+    {
+        if (bUseD3DRenderer)
+        {
+            D3DOverlay.Detach();
+        }
+        else
+        {
+            MagOverlay.Detach();
+        }
+    }
+
+    void Application::HideActiveOverlay()
+    {
+        if (bUseD3DRenderer)
+        {
+            D3DOverlay.Hide();
+        }
+        else
+        {
+            MagOverlay.Hide();
+        }
+    }
+
+    void Application::ShowActiveOverlay()
+    {
+        if (bUseD3DRenderer)
+        {
+            D3DOverlay.Show();
+        }
+        else
+        {
+            MagOverlay.Show();
+        }
+    }
+
+    HWND Application::ActiveOverlayTargetWindow() const
+    {
+        return bUseD3DRenderer ? D3DOverlay.TargetWindow() : MagOverlay.TargetWindow();
+    }
+
+    bool Application::IsActiveOverlayVisible() const
+    {
+        return bUseD3DRenderer ? D3DOverlay.IsVisible() : MagOverlay.IsVisible();
+    }
+
     void Application::NotifyState()
     {
         if (StateChangeCallback)
         {
-            StateChangeCallback(bIsGrayscaleEnabled, MagOverlay.IsVisible());
+            StateChangeCallback(bIsGrayscaleEnabled, IsActiveOverlayVisible());
         }
     }
 }

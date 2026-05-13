@@ -1,4 +1,5 @@
 #include "gui/MainWindow.h"
+#include "util/Logger.h"
 
 #include <QApplication>
 #include <QHBoxLayout>
@@ -13,10 +14,12 @@
 #include <QStyle>
 #include <QTimer>
 #include <QScreen>
+#include <QScrollBar>
 #include <QSlider>
 #include <QFrame>
 #include <QPainter>
 #include <QGraphicsDropShadowEffect>
+#include <QPlainTextEdit>
 #include <QProcess>
 
 #include <Windows.h>
@@ -229,6 +232,17 @@ namespace csp::gui
                 background: #0d1117;
                 border-top: 1px solid #21262d;
             }
+
+            QPlainTextEdit {
+                background: #0d1117;
+                border: 1px solid #30363d;
+                border-radius: 6px;
+                padding: 8px;
+                color: #c9d1d9;
+                font-family: 'Cascadia Mono', 'Consolas', monospace;
+                font-size: 12px;
+                selection-background-color: #264f78;
+            }
         )";
     }
 
@@ -247,6 +261,7 @@ namespace csp::gui
         SetupTray();
         LoadSettings();
         SetupFocusSync();
+        SetupLogSink();
 
         QTimer::singleShot(0, this, [this]()
         {
@@ -260,6 +275,11 @@ namespace csp::gui
                 UpdateStatusIndicator(enabled, active);
             }, Qt::QueuedConnection);
         });
+    }
+
+    MainWindow::~MainWindow()
+    {
+        csp::util::Logger::Instance().SetSink(nullptr);
     }
 
     void MainWindow::ApplyStyle()
@@ -287,6 +307,7 @@ namespace csp::gui
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\u2699  General"), "", 0));
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\u2328  Hotkey"), "", 1));
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\U0001F5A5  System"), "", 2));
+        sideLayout->addWidget(CreateNavButton("Log", "", 3));
 
         sideLayout->addStretch();
 
@@ -318,6 +339,7 @@ namespace csp::gui
         Stack->addWidget(CreateGeneralPage());
         Stack->addWidget(CreateHotkeyPage());
         Stack->addWidget(CreateSystemPage());
+        Stack->addWidget(CreateLogPage());
 
         contentLayout->addWidget(Stack);
         mainLayout->addWidget(contentWidget, 1);
@@ -405,6 +427,45 @@ namespace csp::gui
         return page;
     }
 
+    QWidget* MainWindow::CreateLogPage()
+    {
+        auto* page = new QWidget;
+        auto* layout = new QVBoxLayout(page);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->setSpacing(12);
+
+        auto* title = new QLabel("Log");
+        title->setObjectName("pageTitle");
+        layout->addWidget(title);
+
+        auto* desc = new QLabel("Runtime diagnostics for renderer, focus, and hotkey behavior.");
+        desc->setObjectName("pageDesc");
+        layout->addWidget(desc);
+
+        LogText = new QPlainTextEdit;
+        LogText->setReadOnly(true);
+        LogText->setMaximumBlockCount(1000);
+        layout->addWidget(LogText, 1);
+
+        auto* btnLayout = new QHBoxLayout;
+        auto* clearBtn = new QPushButton("Clear");
+        clearBtn->setObjectName("actionBtn");
+        clearBtn->setCursor(Qt::PointingHandCursor);
+        connect(clearBtn, &QPushButton::clicked, this, [this]()
+        {
+            if (LogText)
+            {
+                LogText->clear();
+            }
+        });
+
+        btnLayout->addWidget(clearBtn);
+        btnLayout->addStretch();
+        layout->addLayout(btnLayout);
+
+        return page;
+    }
+
     QWidget* MainWindow::CreateHotkeyPage()
     {
         auto* page = new QWidget;
@@ -479,6 +540,16 @@ namespace csp::gui
         startLayout->addWidget(StartMinCheck);
 
         layout->addWidget(startupGroup);
+
+        auto* rendererGroup = new QGroupBox("Renderer");
+        auto* rendererLayout = new QVBoxLayout(rendererGroup);
+
+        D3DRendererCheck = new QCheckBox("Use experimental Direct3D renderer");
+        connect(D3DRendererCheck, &QCheckBox::toggled,
+                this, &MainWindow::OnD3DRendererChanged);
+        rendererLayout->addWidget(D3DRendererCheck);
+
+        layout->addWidget(rendererGroup);
         layout->addStretch();
 
         return page;
@@ -528,6 +599,38 @@ namespace csp::gui
             AppRef.ReevaluateFocus();
         });
         FocusSyncTimer->start();
+    }
+
+    void MainWindow::SetupLogSink()
+    {
+        for (const auto& line : csp::util::Logger::Instance().History())
+        {
+            AppendLogLine(QString::fromStdWString(line).trimmed());
+        }
+
+        csp::util::Logger::Instance().SetSink([this](const std::wstring& Line)
+        {
+            const QString text = QString::fromStdWString(Line).trimmed();
+            QMetaObject::invokeMethod(this, [this, text]()
+            {
+                AppendLogLine(text);
+            }, Qt::QueuedConnection);
+        });
+    }
+
+    void MainWindow::AppendLogLine(const QString& Line)
+    {
+        if (!LogText || Line.isEmpty())
+        {
+            return;
+        }
+
+        LogText->appendPlainText(Line);
+        auto* scrollBar = LogText->verticalScrollBar();
+        if (scrollBar)
+        {
+            scrollBar->setValue(scrollBar->maximum());
+        }
     }
 
     void MainWindow::OnNavClicked(int Index)
@@ -608,6 +711,18 @@ namespace csp::gui
     void MainWindow::OnStartMinimizedChanged(bool)
     {
         UpdateRegistryAutoStart();
+        SaveSettings();
+    }
+
+    void MainWindow::OnD3DRendererChanged(bool Checked)
+    {
+        AppRef.SetD3DRendererEnabled(Checked);
+        if (D3DRendererCheck->isChecked() != AppRef.IsD3DRendererEnabled())
+        {
+            D3DRendererCheck->blockSignals(true);
+            D3DRendererCheck->setChecked(AppRef.IsD3DRendererEnabled());
+            D3DRendererCheck->blockSignals(false);
+        }
         SaveSettings();
     }
 
@@ -760,6 +875,12 @@ namespace csp::gui
         StartMinCheck->setChecked(startMin);
         StartMinCheck->blockSignals(false);
 
+        bool useD3D = Settings.value("Renderer/UseD3D", false).toBool();
+        D3DRendererCheck->blockSignals(true);
+        D3DRendererCheck->setChecked(useD3D);
+        D3DRendererCheck->blockSignals(false);
+        AppRef.SetD3DRendererEnabled(useD3D);
+
         QString hkStr = Settings.value("Hotkey/Sequence", "F9").toString();
         QKeySequence seq(hkStr);
         HotkeyEdit->setKeySequence(seq);
@@ -789,6 +910,7 @@ namespace csp::gui
         Settings.setValue("Hotkey/FocusOnly", FocusOnlyCheck->isChecked());
         Settings.setValue("System/AutoStart", AutoStartCheck->isChecked());
         Settings.setValue("System/StartMinimized", StartMinCheck->isChecked());
+        Settings.setValue("Renderer/UseD3D", D3DRendererCheck->isChecked());
 
         Settings.sync();
     }

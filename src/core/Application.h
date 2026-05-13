@@ -1,5 +1,6 @@
 #pragma once
 
+#include "d3d/D3DOverlayRenderer.h"
 #include "magnification/MagnifierOverlay.h"
 #include "window/FocusTracker.h"
 #include "window/WindowFinder.h"
@@ -36,6 +37,9 @@ namespace csp::core
         // === Settings ===
         void SetRefreshRate(int Fps);
 
+        void SetD3DRendererEnabled(bool Enabled);
+        bool IsD3DRendererEnabled() const { return bUseD3DRenderer; }
+
         void SetHotkey(UINT Modifiers, UINT Vk);
 
         void SetHotkeyFocusOnly(bool Enabled);
@@ -58,9 +62,17 @@ namespace csp::core
         void RegisterHotkeyNow();
         void UnregisterHotkeyNow();
 
+        void AttachActiveOverlay(HWND Hwnd);
+        void DetachActiveOverlay();
+        void HideActiveOverlay();
+        void ShowActiveOverlay();
+        HWND ActiveOverlayTargetWindow() const;
+        bool IsActiveOverlayVisible() const;
+
         void NotifyState();
 
         magnification::MagnifierOverlay MagOverlay;
+        d3d::D3DOverlayRenderer D3DOverlay;
         window::FocusTracker FocusTracker;
         input::HotkeyManager HotkeyManager;
 
@@ -68,6 +80,8 @@ namespace csp::core
         bool bIsTargetInFocus = false;
         bool bHotkeyFocusOnly = true;
         bool bHotkeyRegistered = false;
+        bool bUseD3DRenderer = false;
+        int RefreshRate = 60;
 
         UINT HotkeyMod = 0;
         UINT HotkeyVk = VK_F9;

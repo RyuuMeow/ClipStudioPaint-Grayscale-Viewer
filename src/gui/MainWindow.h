@@ -11,6 +11,7 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QLabel>
+#include <QPlainTextEdit>
 #include <QStackedWidget>
 #include <QTimer>
 
@@ -22,7 +23,7 @@ namespace csp::gui
 
     public:
         explicit MainWindow(csp::core::Application& App, QWidget* Parent = nullptr);
-        ~MainWindow() override = default;
+        ~MainWindow() override;
 
     protected:
         void closeEvent(QCloseEvent* Event) override;
@@ -40,6 +41,8 @@ namespace csp::gui
 
         void OnStartMinimizedChanged(bool Checked);
 
+        void OnD3DRendererChanged(bool Checked);
+
         void OnAddApp();
         void OnRemoveApp();
 
@@ -49,6 +52,7 @@ namespace csp::gui
         void SetupUi();
         void SetupTray();
         void SetupFocusSync();
+        void SetupLogSink();
 
         void ApplyStyle();
 
@@ -62,8 +66,10 @@ namespace csp::gui
         QWidget* CreateGeneralPage();
         QWidget* CreateHotkeyPage();
         QWidget* CreateSystemPage();
+        QWidget* CreateLogPage();
         QPushButton* CreateNavButton(const QString& Text, const QString& Icon, int Index);
 
+        void AppendLogLine(const QString& Line);
         void SyncAppListToBackend();
 
         csp::core::Application& AppRef;
@@ -79,6 +85,8 @@ namespace csp::gui
 
         QCheckBox* AutoStartCheck = nullptr;
         QCheckBox* StartMinCheck = nullptr;
+        QCheckBox* D3DRendererCheck = nullptr;
+        QPlainTextEdit* LogText = nullptr;
 
         QLabel* StatusLabel = nullptr;
         QLabel* StatusDot = nullptr;

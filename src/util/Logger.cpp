@@ -1,6 +1,7 @@
 #include "util/Logger.h"
 #include <cstdio>
 #include <mutex>
+#include <utility>
 
 namespace csp::util
 {
@@ -10,6 +11,18 @@ namespace csp::util
     {
         static Logger instance;
         return instance;
+    }
+
+    void Logger::SetSink(LogSink Sink)
+    {
+        std::lock_guard lock(g_logMutex);
+        SinkCallback = std::move(Sink);
+    }
+
+    std::vector<std::wstring> Logger::History() const
+    {
+        std::lock_guard lock(g_logMutex);
+        return Lines;
     }
 
     void Logger::Debug(const wchar_t* fmt, ...)
@@ -68,16 +81,31 @@ namespace csp::util
         wchar_t line[1100];
         _snwprintf_s(line, _countof(line), _TRUNCATE, L"%s %s\n", Prefix, buf);
 
-        std::lock_guard lock(g_logMutex);
-
-        HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hConsole && hConsole != INVALID_HANDLE_VALUE)
+        LogSink sink;
         {
-            DWORD written = 0;
-            WriteConsoleW(hConsole, line, static_cast<DWORD>(wcslen(line)), &written, nullptr);
+            std::lock_guard lock(g_logMutex);
+
+            Lines.emplace_back(line);
+            if (Lines.size() > 1000)
+            {
+                Lines.erase(Lines.begin());
+            }
+            sink = SinkCallback;
+
+            HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+            if (hConsole && hConsole != INVALID_HANDLE_VALUE)
+            {
+                DWORD written = 0;
+                WriteConsoleW(hConsole, line, static_cast<DWORD>(wcslen(line)), &written, nullptr);
+            }
         }
 
         OutputDebugStringW(line);
+
+        if (sink)
+        {
+            sink(line);
+        }
     }
 
 }
