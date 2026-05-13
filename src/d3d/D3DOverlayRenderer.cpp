@@ -205,8 +205,8 @@ namespace csp::d3d
         }
 
         HostWnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT |
-            WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
+            WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP,
             kHostClassName,
             L"",
             WS_POPUP,
@@ -222,8 +222,28 @@ namespace csp::d3d
             return false;
         }
 
-        SetWindowDisplayAffinity(HostWnd, WDA_EXCLUDEFROMCAPTURE);
+        ApplyClickThroughStyles();
         return true;
+    }
+
+    void D3DOverlayRenderer::ApplyClickThroughStyles()
+    {
+        if (!HostWnd)
+        {
+            return;
+        }
+
+        LONG_PTR exStyle = GetWindowLongPtrW(HostWnd, GWL_EXSTYLE);
+        exStyle |= WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
+                   WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
+        SetWindowLongPtrW(HostWnd, GWL_EXSTYLE, exStyle);
+        SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA);
+        SetWindowDisplayAffinity(HostWnd, WDA_EXCLUDEFROMCAPTURE);
+        SetWindowPos(
+            HostWnd, HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
+        );
     }
 
     bool D3DOverlayRenderer::InitializeDevice()
@@ -745,6 +765,7 @@ namespace csp::d3d
 
         if (!IsWindowVisible(HostWnd))
         {
+            ApplyClickThroughStyles();
             ShowWindow(HostWnd, SW_SHOWNOACTIVATE);
         }
 
@@ -902,6 +923,17 @@ namespace csp::d3d
         case WM_SETCURSOR:
             SetCursor(nullptr);
             return TRUE;
+
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_RBUTTONUP:
+        case WM_MBUTTONDOWN:
+        case WM_MBUTTONUP:
+        case WM_MOUSEMOVE:
+        case WM_MOUSEWHEEL:
+        case WM_MOUSEHWHEEL:
+            return 0;
 
         case WM_DESTROY:
             return 0;

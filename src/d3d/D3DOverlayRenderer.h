@@ -38,6 +38,7 @@ namespace csp::d3d
         static LRESULT CALLBACK HostWndProc(HWND Hwnd, UINT Msg, WPARAM WParam, LPARAM LParam);
 
         bool CreateHostWindow();
+        void ApplyClickThroughStyles();
         bool InitializeDevice();
         bool InitializeDeviceForMonitor(HMONITOR Monitor);
         bool CreateShaders();

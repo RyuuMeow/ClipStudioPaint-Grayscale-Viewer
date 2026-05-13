@@ -307,7 +307,7 @@ namespace csp::gui
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\u2699  General"), "", 0));
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\u2328  Hotkey"), "", 1));
         sideLayout->addWidget(CreateNavButton(QString::fromWCharArray(L"\U0001F5A5  System"), "", 2));
-        sideLayout->addWidget(CreateNavButton("Log", "", 3));
+        sideLayout->addWidget(CreateNavButton("\U0001F4C4  Log", "", 3));
 
         sideLayout->addStretch();
 
