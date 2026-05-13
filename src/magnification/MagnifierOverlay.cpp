@@ -1,7 +1,11 @@
 #include "magnification/MagnifierOverlay.h"
 #include "util/Logger.h"
 #include <dwmapi.h>
+#include <mmsystem.h>
 #include <shobjidl.h>
+#include <chrono>
+
+#pragma comment(lib, "winmm.lib")
 
 namespace csp::magnification
 {
@@ -12,7 +16,7 @@ namespace csp::magnification
     {
         constexpr wchar_t kHostClassName[] = L"CSP_GrayscaleOverlay";
         constexpr int kDelayFrames = 3;
-        constexpr UINT_PTR kTimerId = 1;
+        constexpr UINT kRefreshMessage = WM_APP + 1;
 
         // BT.601 grayscale color matrix
         constexpr MAGCOLOREFFECT kGrayscaleEffect = {{
@@ -218,13 +222,14 @@ namespace csp::magnification
         ShowFrames = 0; // Reset frame counter for fade-in
 
         Visible = true;
+        EnableHighResolutionTimer();
         UpdateOverlay();
         
         // Force immediate synchronous redraw to prevent old frames from flashing
         UpdateWindow(HostWnd);
         UpdateWindow(MagWnd);
 
-        SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr);
+        StartRefreshLoop();
         LOG_INFO(L"Grayscale overlay shown");
     }
 
@@ -235,7 +240,8 @@ namespace csp::magnification
             return;
         }
 
-        KillTimer(HostWnd, kTimerId);
+        StopRefreshLoop();
+        DisableHighResolutionTimer();
         ShowWindow(HostWnd, SW_HIDE);
         Visible = false;
 
@@ -252,19 +258,89 @@ namespace csp::magnification
         {
             fps = 240;
         }
-        TimerIntervalMs = static_cast<UINT>(1000 / fps);
-        if (TimerIntervalMs < 1)
+        UINT interval = static_cast<UINT>(1000 / fps);
+        if (interval < 1)
         {
-            TimerIntervalMs = 1;
+            interval = 1;
+        }
+        TimerIntervalMs.store(interval);
+        LOG_INFO(L"Refresh rate set to %d fps (%u ms)", fps, interval);
+    }
+
+    void MagnifierOverlay::EnableHighResolutionTimer()
+    {
+        if (HighResolutionTimerEnabled)
+        {
+            return;
         }
 
-        // Restart timer if currently active
-        if (Visible && HostWnd)
+        if (timeBeginPeriod(1) == TIMERR_NOERROR)
         {
-            KillTimer(HostWnd, kTimerId);
-            SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr);
+            HighResolutionTimerEnabled = true;
         }
-        LOG_INFO(L"Refresh rate set to %d fps (%u ms)", fps, TimerIntervalMs);
+        else
+        {
+            LOG_WARNING(L"timeBeginPeriod(1) failed; timer precision may be limited");
+        }
+    }
+
+    void MagnifierOverlay::DisableHighResolutionTimer()
+    {
+        if (!HighResolutionTimerEnabled)
+        {
+            return;
+        }
+
+        timeEndPeriod(1);
+        HighResolutionTimerEnabled = false;
+    }
+
+    void MagnifierOverlay::StartRefreshLoop()
+    {
+        if (RefreshLoopRunning.exchange(true))
+        {
+            return;
+        }
+
+        RefreshPending.store(false);
+        RefreshThread = std::thread([this]()
+        {
+            auto nextFrame = std::chrono::steady_clock::now();
+
+            while (RefreshLoopRunning.load())
+            {
+                const auto interval = std::chrono::milliseconds(TimerIntervalMs.load());
+                nextFrame += interval;
+
+                if (!RefreshPending.exchange(true))
+                {
+                    PostMessageW(HostWnd, kRefreshMessage, 0, 0);
+                }
+
+                std::this_thread::sleep_until(nextFrame);
+
+                const auto now = std::chrono::steady_clock::now();
+                if (nextFrame + interval < now)
+                {
+                    nextFrame = now;
+                }
+            }
+        });
+    }
+
+    void MagnifierOverlay::StopRefreshLoop()
+    {
+        if (!RefreshLoopRunning.exchange(false))
+        {
+            return;
+        }
+
+        if (RefreshThread.joinable())
+        {
+            RefreshThread.join();
+        }
+
+        RefreshPending.store(false);
     }
 
     // ─── Frame Update ────────────────────────────────────────────────────
@@ -330,14 +406,18 @@ namespace csp::magnification
                          0, 0, w, h,
                          SWP_NOZORDER | SWP_NOACTIVATE);
 
-            // Update source rect only when position changed
-            RECT sourceRect = { rc.left, rc.top, rc.right, rc.bottom };
-            MagSetWindowSource(MagWnd, sourceRect);
         }
 
-        // Always invalidate to refresh content (user may be drawing)
+        // Refresh the captured source every frame. The magnifier control does
+        // not reliably pick up high-frequency drawing changes from invalidation alone.
+        RECT sourceRect = { rc.left, rc.top, rc.right, rc.bottom };
+        MagSetWindowSource(MagWnd, sourceRect);
+
+        // Always invalidate to refresh content (user may be drawing).
         // FALSE = don't erase background, reduces flicker
         InvalidateRect(MagWnd, nullptr, FALSE);
+        UpdateWindow(MagWnd);
+        DwmFlush();
 
         // Fade-in mechanism: Wait 2 frames before making the window fully visible
         // This gives the Magnifier control enough time to capture the new screen state
@@ -358,9 +438,10 @@ namespace csp::magnification
     {
         switch (msg)
         {
-        case WM_TIMER:
-            if (wParam == kTimerId && Instance)
+        case kRefreshMessage:
+            if (Instance)
             {
+                Instance->RefreshPending.store(false);
                 Instance->UpdateOverlay();
             }
             return 0;

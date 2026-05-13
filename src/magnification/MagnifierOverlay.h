@@ -2,6 +2,8 @@
 
 #include <Windows.h>
 #include <magnification.h>
+#include <atomic>
+#include <thread>
 
 #pragma comment(lib, "Magnification.lib")
 
@@ -49,14 +51,23 @@ namespace csp::magnification
 
         bool CreateHostWindow();
         bool CreateMagnifierControl();
+        void EnableHighResolutionTimer();
+        void DisableHighResolutionTimer();
+        void StartRefreshLoop();
+        void StopRefreshLoop();
         void UpdateOverlay();
 
-        UINT TimerIntervalMs = 16; // default ~60fps
+        std::atomic<UINT> TimerIntervalMs = 16; // default ~60fps
+        std::atomic<bool> RefreshLoopRunning = false;
+        std::atomic<bool> RefreshPending = false;
+        std::thread RefreshThread;
+
         HWND HostWnd   = nullptr;
         HWND MagWnd    = nullptr;
         HWND TargetWnd = nullptr;
         bool Visible     = false;
         bool Initialized = false;
+        bool HighResolutionTimerEnabled = false;
         int ShowFrames   = 0;
 
         // Cached target rect to skip redundant SetWindowPos when CSP hasn't moved

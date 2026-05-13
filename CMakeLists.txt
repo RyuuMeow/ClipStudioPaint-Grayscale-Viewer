@@ -85,6 +85,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     user32
     shell32
     dwmapi
+    winmm
 )
 
 # ─── Console fallback (no Qt) ────────────────────────────────────────
@@ -113,4 +114,5 @@ target_link_libraries(${PROJECT_NAME}_Console PRIVATE
     user32
     shell32
     dwmapi
+    winmm
 )
