@@ -12,6 +12,7 @@
 #include <QPushButton>
 #include <QLabel>
 #include <QStackedWidget>
+#include <QTimer>
 
 namespace csp::gui
 {
@@ -47,6 +48,7 @@ namespace csp::gui
     private:
         void SetupUi();
         void SetupTray();
+        void SetupFocusSync();
 
         void ApplyStyle();
 
@@ -82,6 +84,7 @@ namespace csp::gui
         QLabel* StatusDot = nullptr;
 
         QSystemTrayIcon* Tray = nullptr;
+        QTimer* FocusSyncTimer = nullptr;
 
         QSettings Settings;
     };

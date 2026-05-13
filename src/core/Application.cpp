@@ -145,9 +145,12 @@ namespace csp::core
     {
         if (bHotkeyFocusOnly == Enabled)
         {
+            ReevaluateFocus();
             return;
         }
         bHotkeyFocusOnly = Enabled;
+
+        ReevaluateFocus();
 
         if (Enabled)
         {
@@ -168,6 +171,7 @@ namespace csp::core
     void Application::SetTargetApps(const std::vector<std::wstring>& Apps)
     {
         window::WindowFinder::SetTargetProcessNames(Apps);
+        ReevaluateFocus();
     }
 
     void Application::ReevaluateFocus()

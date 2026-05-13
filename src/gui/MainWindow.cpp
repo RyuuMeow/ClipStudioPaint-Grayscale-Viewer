@@ -246,6 +246,7 @@ namespace csp::gui
         SetupUi();
         SetupTray();
         LoadSettings();
+        SetupFocusSync();
 
         QTimer::singleShot(0, this, [this]()
         {
@@ -516,6 +517,17 @@ namespace csp::gui
                 this, &MainWindow::OnTrayActivated);
 
         Tray->show();
+    }
+
+    void MainWindow::SetupFocusSync()
+    {
+        FocusSyncTimer = new QTimer(this);
+        FocusSyncTimer->setInterval(250);
+        connect(FocusSyncTimer, &QTimer::timeout, this, [this]()
+        {
+            AppRef.ReevaluateFocus();
+        });
+        FocusSyncTimer->start();
     }
 
     void MainWindow::OnNavClicked(int Index)
