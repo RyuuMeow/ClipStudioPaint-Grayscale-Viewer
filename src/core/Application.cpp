@@ -128,6 +128,7 @@ namespace csp::core
     {
         if (bUseD3DRenderer == Enabled)
         {
+            NotifyState();
             return;
         }
 
@@ -221,6 +222,11 @@ namespace csp::core
         HWND fg = GetForegroundWindow();
         bool isTarget = (fg && window::WindowFinder::IsTargetWindow(fg));
         OnFocusChanged(fg, isTarget);
+    }
+
+    void Application::ForceNotifyState()
+    {
+        NotifyState();
     }
 
     void Application::OnFocusChanged(HWND Hwnd, bool IsTarget)
@@ -371,11 +377,43 @@ namespace csp::core
         return bUseD3DRenderer ? D3DOverlay.IsVisible() : MagOverlay.IsVisible();
     }
 
+    bool Application::IsActiveOverlayActive() const
+    {
+        if (!bIsGrayscaleEnabled)
+        {
+            return false;
+        }
+
+        if (bUseD3DRenderer)
+        {
+            return D3DOverlay.IsVisible();
+        }
+
+        return MagOverlay.IsVisible() ||
+               (bIsTargetInFocus && MagOverlay.TargetWindow() && IsWindow(MagOverlay.TargetWindow()));
+    }
+
     void Application::NotifyState()
     {
+        const bool active = IsActiveOverlayActive();
+        if (!bHasNotifiedState ||
+            bLastNotifiedEnabled != bIsGrayscaleEnabled ||
+            bLastNotifiedActive != active)
+        {
+            LOG_INFO(L"State changed: enabled=%d active=%d backend=%s targetFocus=%d magVisible=%d d3dVisible=%d",
+                     bIsGrayscaleEnabled ? 1 : 0,
+                     active ? 1 : 0,
+                     bUseD3DRenderer ? L"D3D" : L"Magnification",
+                     bIsTargetInFocus ? 1 : 0,
+                     MagOverlay.IsVisible() ? 1 : 0,
+                     D3DOverlay.IsVisible() ? 1 : 0);
+            bLastNotifiedEnabled = bIsGrayscaleEnabled;
+            bLastNotifiedActive = active;
+            bHasNotifiedState = true;
+        }
         if (StateChangeCallback)
         {
-            StateChangeCallback(bIsGrayscaleEnabled, IsActiveOverlayVisible());
+            StateChangeCallback(bIsGrayscaleEnabled, active);
         }
     }
 }

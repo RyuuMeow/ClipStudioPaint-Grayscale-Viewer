@@ -87,6 +87,9 @@ namespace csp::gui
         QCheckBox* StartMinCheck = nullptr;
         QCheckBox* D3DRendererCheck = nullptr;
         QPlainTextEdit* LogText = nullptr;
+        bool LastStatusEnabled = false;
+        bool LastStatusActive = false;
+        bool HasStatusState = false;
 
         QLabel* StatusLabel = nullptr;
         QLabel* StatusDot = nullptr;

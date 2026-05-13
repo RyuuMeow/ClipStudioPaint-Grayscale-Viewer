@@ -51,6 +51,7 @@ namespace csp::core
         void HandleNativeHotkey(int Id);
 
         void ReevaluateFocus();
+        void ForceNotifyState();
 
         // === Callbacks ===
         using StateCallback = std::function<void(bool Enabled, bool Active)>;
@@ -68,6 +69,7 @@ namespace csp::core
         void ShowActiveOverlay();
         HWND ActiveOverlayTargetWindow() const;
         bool IsActiveOverlayVisible() const;
+        bool IsActiveOverlayActive() const;
 
         void NotifyState();
 
@@ -81,6 +83,9 @@ namespace csp::core
         bool bHotkeyFocusOnly = true;
         bool bHotkeyRegistered = false;
         bool bUseD3DRenderer = false;
+        bool bLastNotifiedEnabled = false;
+        bool bLastNotifiedActive = false;
+        bool bHasNotifiedState = false;
         int RefreshRate = 60;
 
         UINT HotkeyMod = 0;

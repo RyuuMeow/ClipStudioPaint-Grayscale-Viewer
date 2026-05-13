@@ -275,6 +275,7 @@ namespace csp::gui
                 UpdateStatusIndicator(enabled, active);
             }, Qt::QueuedConnection);
         });
+        AppRef.ForceNotifyState();
     }
 
     MainWindow::~MainWindow()
@@ -831,23 +832,51 @@ namespace csp::gui
 
     void MainWindow::UpdateStatusIndicator(bool Enabled, bool Active)
     {
+        QString statusText;
+        QString dotColor;
+        QString textColor;
+
+        if (!HasStatusState || LastStatusEnabled != Enabled || LastStatusActive != Active)
+        {
+            LOG_INFO(L"GUI status update: enabled=%d active=%d",
+                     Enabled ? 1 : 0,
+                     Active ? 1 : 0);
+            LastStatusEnabled = Enabled;
+            LastStatusActive = Active;
+            HasStatusState = true;
+        }
+
         if (!Enabled)
         {
-            StatusDot->setStyleSheet("background: #30363d; border-radius: 5px;");
-            StatusLabel->setText("Inactive");
-            StatusLabel->setStyleSheet("color: #8b949e; font-size: 12px;");
+            statusText = "Inactive";
+            dotColor = "#30363d";
+            textColor = "#8b949e";
         }
         else if (Active)
         {
-            StatusDot->setStyleSheet("background: #3fb950; border-radius: 5px;");
-            StatusLabel->setText("Active");
-            StatusLabel->setStyleSheet("color: #3fb950; font-size: 12px;");
+            statusText = "Active";
+            dotColor = "#3fb950";
+            textColor = "#3fb950";
         }
         else
         {
-            StatusDot->setStyleSheet("background: #d29922; border-radius: 5px;");
-            StatusLabel->setText("Waiting");
-            StatusLabel->setStyleSheet("color: #d29922; font-size: 12px;");
+            statusText = "Waiting";
+            dotColor = "#d29922";
+            textColor = "#d29922";
+        }
+
+        StatusDot->setStyleSheet(QString("background: %1; border-radius: 5px;").arg(dotColor));
+        StatusLabel->setText(statusText);
+        StatusLabel->setStyleSheet(QString("color: %1; font-size: 12px;").arg(textColor));
+        StatusLabel->adjustSize();
+        StatusDot->update();
+        StatusLabel->update();
+        StatusDot->repaint();
+        StatusLabel->repaint();
+
+        if (Tray)
+        {
+            Tray->setToolTip(QString("CSP Grayscale Viewer - %1").arg(statusText));
         }
     }
 
