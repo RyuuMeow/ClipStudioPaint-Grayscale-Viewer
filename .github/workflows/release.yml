@@ -1,4 +1,4 @@
-name: Windows Build & Release
+name: Windows Release
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: windows-latest
 
     steps:
@@ -24,32 +24,40 @@ jobs:
         uses: jurplel/install-qt-action@v3
         with:
           version: '6.9.0'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
 
-      - name: Build Project
-        run: |
-          mkdir build
-          cd build
-          cmake .. -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=Release
-          cmake --build . --config Release --parallel
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
 
-      - name: Deploy Qt Dependencies
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Deploy Qt dependencies
+        shell: pwsh
         run: |
-          mkdir deploy
-          copy build\bin\CSP-Grayscale-Viewer.exe deploy\
-          copy build\bin\CSP-Grayscale-Viewer_Console.exe deploy\
+          New-Item -ItemType Directory -Force deploy | Out-Null
+          Copy-Item build\Release\CSP-Grayscale-Viewer.exe deploy\
+          Copy-Item build\Release\CSP-Grayscale-Viewer_Console.exe deploy\
           windeployqt --release --no-translations --no-opengl-sw deploy\CSP-Grayscale-Viewer.exe
 
-      - name: Compile Installer
-        run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+      - name: Compile installer
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
 
-      - name: Upload Release Assets
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            Output/CSP-Grayscale-Viewer_Setup.exe
+          files: Output/CSP-Grayscale-Viewer_Setup.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

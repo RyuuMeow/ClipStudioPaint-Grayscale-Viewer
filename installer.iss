@@ -6,7 +6,7 @@ DefaultDirName={autopf}\CSP-Grayscale-Viewer
 DefaultGroupName=CSP Grayscale Viewer
 
 OutputDir=Output
-OutputBaseFilename=CSP-Grayscale-Viewer-Setup
+OutputBaseFilename=CSP-Grayscale-Viewer_Setup
 Compression=lzma
 SolidCompression=yes
 ArchitecturesInstallIn64BitMode=x64
