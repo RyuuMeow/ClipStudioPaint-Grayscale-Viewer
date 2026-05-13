@@ -19,6 +19,15 @@
 
 CSP Grayscale Viewer is a lightweight grayscale preview helper for Clip Studio Paint and other drawing applications on Windows. It overlays a click-through grayscale preview on top of the target app, so you can quickly check values without changing your artwork.
 
+## Why This Approach
+
+- **No DLL injection, no hooks, no memory patching**: The app does not inject code into Clip Studio Paint, hook its rendering pipeline, or modify its process memory.
+- **Non-invasive by design**: CSP keeps rendering normally. The grayscale preview is drawn by a separate overlay window.
+- **Lower crash risk for your drawing app**: Because the tool runs out-of-process and avoids touching CSP internals, renderer failures should not take CSP down with it.
+- **Made for drawing flow**: The overlay is click-through, so pen strokes, mouse input, shortcuts, and canvas interaction continue to go to CSP.
+- **Live preview while drawing**: The preview updates while you paint, making it useful for checking values during normal work instead of exporting or duplicating layers.
+- **Efficient native implementation**: Built in C++20 with Win32, Qt, Windows Magnification, and an experimental D3D11 backend.
+
 ## Features
 
 - **Target-aware overlay**: The grayscale preview is only active when a configured target application, such as `CLIPStudioPaint.exe`, is focused.

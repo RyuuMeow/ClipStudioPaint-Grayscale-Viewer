@@ -19,6 +19,15 @@
 
 CSP Grayscale Viewer 是一款專為 Clip Studio Paint 與其他 Windows 繪圖軟體設計的灰階預覽輔助工具。它會在目標軟體上方建立可穿透滑鼠與筆輸入的灰階 overlay，讓你在不修改作品本身的情況下快速檢查明暗關係。
 
+## 為什麼使用這種方式
+
+- **不注入 DLL、不 hook、不改記憶體**：程式不會把程式碼注入 Clip Studio Paint，也不會 hook 它的渲染流程或修改 CSP 的 process memory。
+- **非侵入式設計**：CSP 維持原本的正常渲染，灰階預覽由獨立 overlay 視窗負責顯示。
+- **降低繪圖軟體崩潰風險**：工具在 CSP 外部執行，不碰 CSP 內部資料；即使 renderer 發生問題，也不應直接拖垮 CSP。
+- **不干擾繪圖流程**：overlay 可穿透輸入，筆觸、滑鼠、快捷鍵與畫布操作仍會送到 CSP。
+- **繪畫時同步預覽**：作畫過程中即可即時檢查明暗，不需要匯出圖片或複製圖層。
+- **原生高效率實作**：使用 C++20、Win32、Qt、Windows Magnification 與實驗性 D3D11 backend 開發。
+
 ## 功能特色
 
 - **目標視窗綁定**：只有在指定的目標應用程式，例如 `CLIPStudioPaint.exe`，取得焦點時才啟用灰階預覽。
