@@ -2,8 +2,6 @@
 
 #include <Windows.h>
 #include <magnification.h>
-#include <atomic>
-#include <thread>
 
 #pragma comment(lib, "Magnification.lib")
 
@@ -57,10 +55,7 @@ namespace csp::magnification
         void StopRefreshLoop();
         void UpdateOverlay();
 
-        std::atomic<UINT> TimerIntervalMs = 16; // default ~60fps
-        std::atomic<bool> RefreshLoopRunning = false;
-        std::atomic<bool> RefreshPending = false;
-        std::thread RefreshThread;
+        UINT TimerIntervalMs = 16; // default ~60fps
 
         HWND HostWnd   = nullptr;
         HWND MagWnd    = nullptr;

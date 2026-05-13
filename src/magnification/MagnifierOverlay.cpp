@@ -3,7 +3,6 @@
 #include <dwmapi.h>
 #include <mmsystem.h>
 #include <shobjidl.h>
-#include <chrono>
 
 #pragma comment(lib, "winmm.lib")
 
@@ -16,7 +15,7 @@ namespace csp::magnification
     {
         constexpr wchar_t kHostClassName[] = L"CSP_GrayscaleOverlay";
         constexpr int kDelayFrames = 3;
-        constexpr UINT kRefreshMessage = WM_APP + 1;
+        constexpr UINT_PTR kTimerId = 1;
 
         // BT.601 grayscale color matrix
         constexpr MAGCOLOREFFECT kGrayscaleEffect = {{
@@ -263,7 +262,7 @@ namespace csp::magnification
         {
             interval = 1;
         }
-        TimerIntervalMs.store(interval);
+        TimerIntervalMs = interval;
         LOG_INFO(L"Refresh rate set to %d fps (%u ms)", fps, interval);
     }
 
@@ -297,50 +296,22 @@ namespace csp::magnification
 
     void MagnifierOverlay::StartRefreshLoop()
     {
-        if (RefreshLoopRunning.exchange(true))
+        if (!HostWnd)
         {
             return;
         }
 
-        RefreshPending.store(false);
-        RefreshThread = std::thread([this]()
-        {
-            auto nextFrame = std::chrono::steady_clock::now();
-
-            while (RefreshLoopRunning.load())
-            {
-                const auto interval = std::chrono::milliseconds(TimerIntervalMs.load());
-                nextFrame += interval;
-
-                if (!RefreshPending.exchange(true))
-                {
-                    PostMessageW(HostWnd, kRefreshMessage, 0, 0);
-                }
-
-                std::this_thread::sleep_until(nextFrame);
-
-                const auto now = std::chrono::steady_clock::now();
-                if (nextFrame + interval < now)
-                {
-                    nextFrame = now;
-                }
-            }
-        });
+        SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr);
     }
 
     void MagnifierOverlay::StopRefreshLoop()
     {
-        if (!RefreshLoopRunning.exchange(false))
+        if (!HostWnd)
         {
             return;
         }
 
-        if (RefreshThread.joinable())
-        {
-            RefreshThread.join();
-        }
-
-        RefreshPending.store(false);
+        KillTimer(HostWnd, kTimerId);
     }
 
     // ─── Frame Update ────────────────────────────────────────────────────
@@ -416,8 +387,6 @@ namespace csp::magnification
         // Always invalidate to refresh content (user may be drawing).
         // FALSE = don't erase background, reduces flicker
         InvalidateRect(MagWnd, nullptr, FALSE);
-        UpdateWindow(MagWnd);
-        DwmFlush();
 
         // Fade-in mechanism: Wait 2 frames before making the window fully visible
         // This gives the Magnifier control enough time to capture the new screen state
@@ -438,10 +407,9 @@ namespace csp::magnification
     {
         switch (msg)
         {
-        case kRefreshMessage:
-            if (Instance)
+        case WM_TIMER:
+            if (wParam == kTimerId && Instance)
             {
-                Instance->RefreshPending.store(false);
                 Instance->UpdateOverlay();
             }
             return 0;
