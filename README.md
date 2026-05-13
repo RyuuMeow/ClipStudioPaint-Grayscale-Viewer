@@ -13,6 +13,10 @@
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <img src="demo/demo.gif" alt="CSP Grayscale Viewer demo">
+</p>
+
 CSP Grayscale Viewer is a lightweight grayscale preview helper for Clip Studio Paint and other drawing applications on Windows. It overlays a click-through grayscale preview on top of the target app, so you can quickly check values without changing your artwork.
 
 ## Features

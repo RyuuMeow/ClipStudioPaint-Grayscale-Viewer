@@ -13,6 +13,10 @@
   <a href="README.zh-CN.md">简体中文</a>
 </p>
 
+<p align="center">
+  <img src="demo/demo.gif" alt="CSP Grayscale Viewer 演示">
+</p>
+
 CSP Grayscale Viewer 是一款为 Clip Studio Paint 和其他 Windows 绘图软件设计的灰阶预览辅助工具。它会在目标软件上方创建可穿透鼠标与笔输入的灰阶 overlay，让你在不修改作品本身的情况下快速检查明暗关系。
 
 ## 功能特性
