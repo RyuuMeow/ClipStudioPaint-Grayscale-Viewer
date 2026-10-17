@@ -15,7 +15,7 @@ Shortcut and target editing use small native dialogs created only when opened. T
 
 ## Rendering
 
-New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion, and presentation run on a dedicated worker. There is no per-frame UI message queue; duplicate timeout and cursor-only frames are skipped. Hidden previews stop rendering and release GPU resources after five seconds. Focus tracking uses Windows events instead of periodic polling.
+New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion, and presentation run on a dedicated worker. There is no per-frame UI message queue; duplicate timeout and cursor-only frames are skipped. Hidden previews stop rendering and release image buffers after five seconds, while retaining the device and shaders for fast resume. Focus tracking uses Windows events instead of periodic polling.
 
 **Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it when capture fails, the target spans monitors, or the display is rotated. Switching back to the target retries a transient D3D failure. The tray status identifies the active mode.
 

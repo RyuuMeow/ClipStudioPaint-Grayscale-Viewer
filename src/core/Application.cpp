@@ -78,7 +78,7 @@ namespace csp::core
         PreferD3D = value;
         D3DFailed = false;
         OverlayError = false;
-        if (D3DOverlay.HasFailed()) D3DOverlay.Shutdown();
+        if (!value || D3DOverlay.HasFailed()) D3DOverlay.Shutdown();
         ReevaluateFocus();
     }
     bool Application::SetHotkey(UINT modifiers, UINT vk)
@@ -118,6 +118,7 @@ namespace csp::core
     void Application::SetSuspended(bool value)
     {
         Suspended = value;
+        if (value) D3DOverlay.Shutdown();
         if (!value) D3DFailed = false;
         ReevaluateFocus();
     }

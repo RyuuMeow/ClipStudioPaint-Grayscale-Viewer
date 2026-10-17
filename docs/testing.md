@@ -19,7 +19,7 @@ Renderer integration requires an **unlocked desktop and a DXGI-capable GPU**. It
 .\scripts\test.ps1 -Configuration Release -Smoke -Renderers
 ```
 
-This verifies transparent D3D startup, a completed first presentation, target resizing, 20 hide/show cycles per renderer, eight cancellations during first-frame preparation, no D3D presentations while hidden, five-second GPU release, reactivation after release, shutdown, and stale Magnification timer messages. A missing GPU/capture service is a failure, not a silent pass. These checks do not establish pixel correctness, tablet input latency, or HDR fidelity.
+This verifies transparent D3D startup, a completed first presentation, target resizing, 20 hide/show cycles per renderer, eight cancellations during first-frame preparation, no D3D presentations while hidden, five-second image-buffer release, reuse of the device after idle, cache invalidation on display changes, full shutdown, and stale Magnification timer messages. A missing GPU/capture service is a failure, not a silent pass. These checks do not establish pixel correctness, tablet input latency, or HDR fidelity.
 
 ## Idle measurements
 
@@ -38,7 +38,7 @@ For meaningful latency/performance comparisons, use the same machine, window siz
 - `tray/TrayApplication`: hidden broadcast window, notification icon, menu, startup registration and on-demand diagnostics. `SettingsDialogs` contains the two native dialogs.
 - `core/Settings`: validated UTF-8 persistence and legacy import. Parsing has no UI callbacks and cannot overwrite another setting during initialization.
 - `core/Application`: UI-thread state, native shortcut window, coalesced focus events, renderer choice and failure fallback. Inactive renderers are initialized only when needed.
-- `d3d/D3DOverlayRenderer`: worker-owned HWND, D3D immediate context and COM resources. Atomic commands wake a waitable event; a one-shot timer paces active capture. Visibility/target revisions invalidate obsolete work. An inactive worker blocks without periodic ticks and releases its device after five seconds.
+- `d3d/D3DOverlayRenderer`: worker-owned HWND, D3D immediate context and COM resources. Atomic commands wake a waitable event; a one-shot timer paces active capture. Visibility/target revisions invalidate obsolete work. An inactive worker blocks without periodic ticks, releases image buffers after five seconds, and retains its device/shaders for fast resume.
 - `magnification/MagnifierOverlay`: Windows compatibility renderer on the UI thread. Hidden state guards queued timer messages; `SetTimer` is limited to a minimum interval of 10 ms.
 - `window/FocusTracker`: out-of-process foreground, location and minimization WinEvents. It does not inject code or hook a drawing application's rendering pipeline.
 
@@ -49,6 +49,14 @@ D3D keeps frames in GPU textures. `AcquireNextFrame(0)` does not block the UI; t
 `Present` success means the frame was queued. The original reveal path made the host opaque before DWM consumed that frame; local diagnostics reproduced `submitted=1, composed=0` at the first reveal. The host now starts transparent, becomes minimally visible (alpha 1/255) before the first submission, and is made opaque only after the compositor reports that presentation completed. Alpha zero is unsuitable during preparation because DWM can skip the surface entirely. The worker uses `WaitForCommitCompletion`, `DwmFlush` and [DXGI frame statistics](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics), checking cancellation between waits. The statistics wait is capped at 250 ms; unavailable statistics or a timeout select compatibility mode instead of revealing an unconfirmed frame. Normal frames do not use this synchronization path.
 
 Local before/after instrumentation confirmed submitted and composed counts match before each successful reveal. The regression test also checks cancellation during the nearly transparent phase, so an obsolete first frame cannot make the window reappear after a toggle-off. Physical display appearance still needs confirmation on the affected user's display.
+
+### Idle resume
+
+Rebuilding the device after every five-second idle period caused a noticeable delay. The renderer now releases desktop duplication when hiding and releases capture textures, swap-chain buffers and composition objects after five seconds. It clears context bindings and calls [IDXGIDevice3::Trim](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgidevice3-trim) to discard unused driver allocations. The device, context, shaders and sampler stay cached; no capture, rendering or periodic timer continues while idle. This retains some driver/device memory instead of fully unloading it. Explicit suspension, switching away from D3D, failure and shutdown release the device; display changes invalidate it, and capture initialization also checks for device removal.
+
+Run `scripts/test.ps1 -Configuration Release -ProfileRenderers` to print device, shader, composition and duplication setup timings plus initial/resume latency. On the same local machine, the instrumented baseline took **189.8 ms** to resume after idle, including **142.1 ms** for device creation. With the cache, the first comparison took **47.6 ms**, with no new device or shader creation. First-frame composition waits were similar (**26 ms** before, **27 ms** after), so the black-flash guard was retained. These are individual test-window samples, including up to one polling interval of observation delay; they are not physical display latency or guarantees for all drivers/window sizes. First activation after process launch still initializes the device on demand.
+
+Final validation passed the core suite, renderer integration tests and tray startup smoke test in both Release and Debug, with no compiler warnings. Final idle-resume samples were **31.6 ms** (Release) and **48.4 ms** (Debug). The display-change test forces a replacement device and verifies successful presentation; shutdown verifies both the cache and image buffers are released. Portable and installer packages were rebuilt from the tested Release binaries.
 
 ### Embedded icons
 

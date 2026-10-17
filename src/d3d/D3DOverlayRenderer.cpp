@@ -6,6 +6,7 @@
 #include <chrono>
 #include <d3dcompiler.h>
 #include <dwmapi.h>
+#include <dxgi1_3.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -23,6 +24,18 @@ namespace csp::d3d
     namespace
     {
         constexpr wchar_t kHostClassName[] = L"CSP_D3DOverlay";
+
+        struct SetupTiming
+        {
+            const wchar_t* Stage;
+            std::chrono::steady_clock::time_point Start = std::chrono::steady_clock::now();
+            ~SetupTiming()
+            {
+                const auto ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - Start).count();
+                LOG_DEBUG(L"D3D setup %s: %.2f ms", Stage, ms);
+            }
+        };
 
         bool IntersectRects(const RECT& A, const RECT& B, RECT& Out)
         {
@@ -221,6 +234,7 @@ namespace csp::d3d
 
     bool D3DOverlayRenderer::InitializeDeviceForMonitor(HMONITOR Monitor)
     {
+        const SetupTiming timing{L"device"};
         ReleaseDeviceResources();
 
         Microsoft::WRL::ComPtr<IDXGIFactory1> factory;
@@ -300,12 +314,14 @@ namespace csp::d3d
         }
 
         DeviceMonitor = Monitor;
+        DevicesCreated.fetch_add(1);
         ResourcesAllocated.store(true);
         return true;
     }
 
     bool D3DOverlayRenderer::CreateShaders()
     {
+        const SetupTiming timing{L"shaders"};
         Microsoft::WRL::ComPtr<ID3DBlob> vsBlob;
         Microsoft::WRL::ComPtr<ID3DBlob> psBlob;
         Microsoft::WRL::ComPtr<ID3DBlob> errors;
@@ -370,6 +386,7 @@ namespace csp::d3d
 
     bool D3DOverlayRenderer::CreateSwapChain(int Width, int Height)
     {
+        const SetupTiming timing{L"composition"};
         Microsoft::WRL::ComPtr<IDXGIDevice> dxgiDevice;
         Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
         Microsoft::WRL::ComPtr<IDXGIFactory2> factory;
@@ -401,6 +418,7 @@ namespace csp::d3d
             LOG_ERROR(L"CreateSwapChainForComposition failed (hr=0x%08X)", hr);
             return false;
         }
+        FrameResourcesAllocated.store(true);
 
         hr = DCompositionCreateDevice(
             dxgiDevice.Get(),
@@ -512,16 +530,20 @@ namespace csp::d3d
     bool D3DOverlayRenderer::EnsureDuplication()
     {
         HMONITOR monitor = MonitorFromWindow(TargetWnd, MONITOR_DEFAULTTONEAREST);
+        // A cached device can be lost while the renderer is idle.
+        if (Device && !Duplication && FAILED(Device->GetDeviceRemovedReason()))
+            ReleaseDeviceResources();
         if (!Device || monitor != DeviceMonitor)
         {
-            if (!InitializeDeviceForMonitor(monitor) ||
-                !CreateShaders() ||
-                !CreateSwapChain(BackBufferWidth > 0 ? BackBufferWidth : 1,
-                                 BackBufferHeight > 0 ? BackBufferHeight : 1))
+            if (!InitializeDeviceForMonitor(monitor) || !CreateShaders())
             {
                 return false;
             }
         }
+        // Idle trimming keeps the expensive device/shaders, but drops image buffers.
+        if (!SwapChain && !CreateSwapChain(BackBufferWidth > 0 ? BackBufferWidth : 1,
+                                           BackBufferHeight > 0 ? BackBufferHeight : 1))
+            return false;
 
         if (Duplication && monitor == CaptureMonitor)
         {
@@ -555,6 +577,7 @@ namespace csp::d3d
                 continue;
             }
 
+            const SetupTiming timing{L"duplication"};
             HRESULT hr = output1->DuplicateOutput(Device.Get(), Duplication.GetAddressOf());
             if (FAILED(hr))
             {
@@ -904,6 +927,7 @@ namespace csp::d3d
             Visible.store(false);
             Presented.store(false);
             ShowWindow(HostWnd, SW_HIDE);
+            ReleaseDeviceResources();
             LOG_WARNING(L"D3D unavailable; requesting Magnification compatibility mode");
             Notify();
         }
@@ -980,10 +1004,17 @@ namespace csp::d3d
                     }
                     wasActive = false;
                     DWORD wait = INFINITE;
-                    if (Device)
+                    if (SwapChain)
                     {
                         const auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - idleSince).count();
-                        if (idleMs >= 5000) ReleaseDeviceResources();
+                        if (idleMs >= 5000)
+                        {
+                            ReleaseFrameResources();
+                            // Trim driver caches without paying device creation again.
+                            Microsoft::WRL::ComPtr<IDXGIDevice3> dxgiDevice;
+                            if (SUCCEEDED(Device.As(&dxgiDevice))) dxgiDevice->Trim();
+                            else Context->Flush();
+                        }
                         else wait = static_cast<DWORD>(5000 - idleMs);
                     }
                     MsgWaitForMultipleObjectsEx(1, &WakeEvent, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
@@ -1030,6 +1061,23 @@ namespace csp::d3d
 
     void D3DOverlayRenderer::ReleaseDeviceResources()
     {
+        ReleaseFrameResources();
+        SamplerState.Reset();
+        PixelShader.Reset();
+        VertexShader.Reset();
+        Context.Reset();
+        Device.Reset();
+        DeviceMonitor = nullptr;
+        ResourcesAllocated.store(false);
+    }
+
+    void D3DOverlayRenderer::ReleaseFrameResources()
+    {
+        // A rebuilt composition surface must pass the first-frame gate again.
+        if (HostWnd) ShowWindow(HostWnd, SW_HIDE);
+        Presented.store(false);
+        // Clear context references before releasing textures or trimming the driver.
+        if (Context) Context->ClearState();
         ReleaseDuplication();
         ReleaseSwapChainResources();
 
@@ -1039,17 +1087,11 @@ namespace csp::d3d
         CaptureHeight = 0;
         HasCapturedFrame = false;
 
-        SamplerState.Reset();
-        PixelShader.Reset();
-        VertexShader.Reset();
         SwapChain.Reset();
         CompositionVisual.Reset();
         CompositionTarget.Reset();
         CompositionDevice.Reset();
-        Context.Reset();
-        Device.Reset();
-        DeviceMonitor = nullptr;
-        ResourcesAllocated.store(false);
+        FrameResourcesAllocated.store(false);
         CaptureInvalid = true;
         PresentationPending = false;
     }

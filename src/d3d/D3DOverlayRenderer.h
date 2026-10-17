@@ -36,6 +36,8 @@ namespace csp::d3d
         HWND TargetWindow() const { return RequestedTarget.load(); }
         bool HasFailed() const { return Failed.load(); }
         bool HasDeviceResources() const { return ResourcesAllocated.load(); }
+        bool HasFrameResources() const { return FrameResourcesAllocated.load(); }
+        uint64_t DeviceCreationCount() const { return DevicesCreated.load(); }
         uint64_t PresentedFrameCount() const { return FramesPresented.load(); }
 
     private:
@@ -62,6 +64,7 @@ namespace csp::d3d
 
         void ReleaseDuplication();
         void ReleaseDeviceResources();
+        void ReleaseFrameResources();
         void ReleaseSwapChainResources();
 
         std::atomic<bool> RefreshLoopRunning = false;
@@ -71,6 +74,8 @@ namespace csp::d3d
         std::atomic<bool> Presented = false;
         std::atomic<bool> Failed = false;
         std::atomic<bool> ResourcesAllocated = false;
+        std::atomic<bool> FrameResourcesAllocated = false;
+        std::atomic<uint64_t> DevicesCreated = 0;
         std::atomic<uint64_t> FramesPresented = 0;
         std::thread RefreshThread;
         HANDLE WakeEvent = nullptr;

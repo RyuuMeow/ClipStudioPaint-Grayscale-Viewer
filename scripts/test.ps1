@@ -1,7 +1,8 @@
 param(
     [ValidateSet('Release', 'Debug')][string]$Configuration = 'Release',
     [switch]$Smoke,
-    [switch]$Renderers
+    [switch]$Renderers,
+    [switch]$ProfileRenderers
 )
 $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path -Parent $PSScriptRoot)
@@ -12,8 +13,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     ctest --test-dir build/native -C $Configuration --output-on-failure
     if ($LASTEXITCODE -ne 0) { throw 'Regression tests failed.' }
-    if ($Renderers) {
-        & "./build/native/$Configuration/csp_renderer_tests.exe"
+    if ($Renderers -or $ProfileRenderers) {
+        $rendererArgs = @()
+        if ($ProfileRenderers) { $rendererArgs += '--profile' }
+        & "./build/native/$Configuration/csp_renderer_tests.exe" @rendererArgs
         if ($LASTEXITCODE -ne 0) { throw 'Renderer integration tests failed.' }
     }
     if ($Smoke) {

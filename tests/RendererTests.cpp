@@ -1,9 +1,11 @@
 #include "d3d/D3DOverlayRenderer.h"
 #include "magnification/MagnifierOverlay.h"
+#include "util/Logger.h"
 #include <Windows.h>
 #include <dwmapi.h>
 #include <iostream>
 #include <stdexcept>
+#include <chrono>
 
 namespace
 {
@@ -79,9 +81,12 @@ namespace
             "unprepared D3D host starts transparent");
         renderer.Attach(target);
         renderer.SetRefreshRate(60);
+        const auto initialStart = std::chrono::steady_clock::now();
         renderer.Show();
         Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "D3D first-frame timeout");
         Check(renderer.IsVisible() && !renderer.HasFailed(), "D3D first frame (requires unlocked GPU desktop)");
+        std::cout << "D3D initial activation: " << std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - initialStart).count() << " ms\n";
         Check(IsWindowVisible(overlay) && Opacity(overlay) == 255, "prepared D3D overlay really visible");
         const auto beforeResize = renderer.PresentedFrameCount();
         SetWindowPos(target, nullptr, 110, 110, 350, 240, SWP_NOZORDER | SWP_NOACTIVATE);
@@ -123,15 +128,31 @@ namespace
             Check(!IsWindowVisible(overlay) && !renderer.IsVisible(), "cancelled first frame stays hidden");
         }
         renderer.Detach();
-        Check(WaitUntil([&] { return !renderer.HasDeviceResources(); }, 6500), "D3D frees idle GPU resources");
+        const auto deviceCount = renderer.DeviceCreationCount();
+        const auto idleFrames = renderer.PresentedFrameCount();
+        Check(WaitUntil([&] { return !renderer.HasFrameResources(); }, 6500), "D3D frees idle image buffers");
+        Check(renderer.HasDeviceResources(), "D3D retains its device for fast resume");
+        Check(renderer.PresentedFrameCount() == idleFrames, "D3D does not present while idle");
         Check(!IsWindowVisible(overlay), "D3D stays hidden after resource release");
         renderer.Attach(target);
+        const auto resumeStart = std::chrono::steady_clock::now();
         renderer.Show();
         Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "D3D restarts after resource release");
         Check(!renderer.HasFailed(), "D3D restart remains healthy");
+        Check(renderer.DeviceCreationCount() == deviceCount, "D3D resumes without recreating its device");
+        std::cout << "D3D resume after idle: " << std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - resumeStart).count() << " ms\n";
+        // A display change must invalidate the cache and reveal only a ready frame.
+        Check(PostMessageW(overlay, WM_DISPLAYCHANGE, 0, 0) != FALSE, "post own renderer display-change event");
+        Check(WaitUntil([&]
+        {
+            return (renderer.DeviceCreationCount() > deviceCount && renderer.IsVisible()) || renderer.HasFailed();
+        }), "D3D recovers after invalidating the cached device");
+        Check(!renderer.HasFailed() && Opacity(overlay) == 255, "replacement device reveals a prepared frame");
         renderer.Shutdown();
-        Check(!IsWindow(overlay) && !renderer.HasDeviceResources(), "D3D shutdown releases window and device");
-        std::cout << "D3D: transparent preparation, 20 hide/show cycles, 8 warm-up cancellations, resize, idle release and restart passed.\n";
+        Check(!IsWindow(overlay) && !renderer.HasDeviceResources() && !renderer.HasFrameResources(),
+            "D3D shutdown releases window and all GPU resources");
+        std::cout << "D3D: transparent preparation, 20 hide/show cycles, 8 warm-up cancellations, resize, idle trimming, device reuse and invalidation passed.\n";
     }
     void TestMagnification(HWND target)
     {
@@ -164,8 +185,21 @@ namespace
         std::cout << "Magnification: 20 hide/show cycles, stale timers and restart passed.\n";
     }
 }
-int main()
+int main(int argc, char** argv)
 {
+    if (argc > 1 && std::string(argv[1]) == "--profile")
+    {
+        csp::util::Logger::Instance().SetLevel(csp::util::Logger::LogLevel::Debug);
+        csp::util::Logger::Instance().SetSink([](const std::wstring& line)
+        {
+            const int size = WideCharToMultiByte(CP_UTF8, 0, line.data(), static_cast<int>(line.size()),
+                nullptr, 0, nullptr, nullptr);
+            std::string utf8(size, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, line.data(), static_cast<int>(line.size()),
+                utf8.data(), size, nullptr, nullptr);
+            std::cout << utf8;
+        });
+    }
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(com)) return 1;
     WNDCLASSW wc{};
