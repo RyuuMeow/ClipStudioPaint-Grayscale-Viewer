@@ -1,93 +1,57 @@
 # CSP Grayscale Viewer
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows-blue">
-  <img src="https://img.shields.io/badge/language-C++20-blue">
-  <img src="https://img.shields.io/badge/framework-Qt%206.9-green">
-  <img src="https://img.shields.io/github/license/RyuuMeow/ClipStudioPaint-Grayscale-Viewer">
-</p>
+[English](README.md) | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-TW.md">繁體中文</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ja-JP.md">日本語</a>
-</p>
-
-<p align="center">
-  <img src="demo/demo.gif" alt="CSP Grayscale Viewer 示範">
-</p>
-
-CSP Grayscale Viewer 是一款專為 Clip Studio Paint 與其他 Windows 繪圖軟體設計的灰階預覽輔助工具。它會在目標軟體上方建立可穿透滑鼠與筆輸入的灰階 overlay，讓你在不修改作品本身的情況下快速檢查明暗關係。
-
-## 為什麼使用這種方式
-
-- **不注入 DLL、不 hook、不改記憶體**：程式不會把程式碼注入 Clip Studio Paint，也不會 hook 它的渲染流程或修改 CSP 的 process memory。
-- **非侵入式設計**：CSP 維持原本的正常渲染，灰階預覽由獨立 overlay 視窗負責顯示。
-- **降低繪圖軟體崩潰風險**：工具在 CSP 外部執行，不碰 CSP 內部資料；即使 renderer 發生問題，也不應直接拖垮 CSP。
-- **不干擾繪圖流程**：overlay 可穿透輸入，筆觸、滑鼠、快捷鍵與畫布操作仍會送到 CSP。
-- **繪畫時同步預覽**：作畫過程中即可即時檢查明暗，不需要匯出圖片或複製圖層。
-- **原生高效率實作**：使用 C++20、Win32、Qt、Windows Magnification 與實驗性 D3D11 backend 開發。
-
-## 功能特色
-
-- **目標視窗綁定**：只有在指定的目標應用程式，例如 `CLIPStudioPaint.exe`，取得焦點時才啟用灰階預覽。
-- **全域快捷鍵**：可自訂快捷鍵切換灰階，預設為 `F9`。
-- **Focus-only 快捷鍵模式**：只有目標軟體在前景時才註冊快捷鍵，避免干擾其他應用程式。
-- **雙 renderer backend**：
-  - **Magnification**：基於 Windows Magnification API 的穩定相容模式。
-  - **Experimental Direct3D**：基於 GPU 的實驗性 renderer，提供更流暢的預覽與未來擴充基礎。
-- **輸入穿透 overlay**：滑鼠與繪圖筆操作會穿透到下方繪圖軟體。
-- **現代 Qt 托盤程式**：可最小化到系統托盤，在背景安靜運作。
-- **Log 頁面**：可在程式內查看 focus、hotkey 與 renderer 診斷資訊。
-
-## 運作原理
-
-程式會追蹤目前前景視窗，並將 overlay 對齊到設定好的目標應用程式上方。Magnification 模式使用 Windows Magnification API 與灰階色彩矩陣。實驗性 Direct3D 模式則會擷取桌面輸出、裁切目標視窗範圍、透過 pixel shader 轉換灰階，最後以 DirectComposition overlay 呈現。
-
-## 安裝
-
-1. 到 [Releases](../../releases) 下載最新安裝檔。
-2. 執行 `CSP-Grayscale-Viewer_Setup.exe`。
-3. 啟動 CSP Grayscale Viewer，設定目標應用程式與快捷鍵。
+Windows 原生系統匣灰階預覽工具，適用於 Clip Studio Paint 與其他繪圖軟體。預覽覆蓋層可穿透滑鼠與繪圖筆輸入，不會修改作品，也不會向繪圖程式注入程式碼。
 
 ## 使用方式
 
-1. 開啟 Clip Studio Paint 或其他已設定的繪圖軟體。
-2. 按下快捷鍵，預設為 `F9`，切換灰階預覽。
-3. 從托盤開啟設定視窗，可調整刷新率、目標應用程式、快捷鍵、開機啟動與 renderer backend。
-4. 若需要診斷 renderer 或焦點行為，可查看 Log 頁面。
+1. 從 [Releases](../../releases) 下載安裝版或可攜版，或依下方方式自行建置。
+2. 執行 `CSP-Grayscale-Viewer.exe`，圖示會出現在 Windows 通知區域。
+3. 切換到 Clip Studio Paint，按 **F9** 開關灰階預覽；左鍵點擊系統匣圖示也能切換。
+4. 右鍵選單可設定目標程式、快捷鍵、更新頻率、渲染器、開機啟動，也可開啟診斷紀錄或離開。
 
-## Renderer 說明
+目標程式與快捷鍵使用按需建立的原生對話框。預設僅在目標程式取得焦點時註冊快捷鍵；更換快捷鍵若發生衝突，會保留原本的綁定。支援 Win 修飾鍵，F12 為 Windows 保留鍵。
 
-想要最高相容性時，建議使用 **Magnification** 模式。想要更流暢的顯示並願意測試新 backend 時，可使用 **Experimental Direct3D** 模式。
+## 渲染方式
 
-Direct3D backend 仍屬於實驗性功能。它也是未來加入更多 GPU 效果的基礎，例如對比檢查、gamma 預覽、LUT 與色覺模擬。
+新設定預設使用 **Direct3D**，更新上限為 60 fps。擷取、灰階處理與呈現都在專用執行緒執行，不會向介面堆積逐幀訊息；沒有新畫面或僅游標變動時會略過不必要的重繪。隱藏後停止渲染，閒置五秒釋放 GPU 資源。焦點追蹤使用 Windows 事件，不再固定輪詢。
 
-## 建置
+**Magnification** 保留為可手動選擇的相容模式。當 Direct3D 擷取失敗、視窗跨螢幕或螢幕旋轉時，會自動切換至相容模式；重新切回目標程式時可重試暫時性的 D3D 失敗。選單狀態會顯示目前模式。
 
-### 需求
+- **Automatic** 依目標螢幕更新率設定上限；手動設定也不會超過螢幕更新率。
+- Direct3D 上限為 144 fps；Magnification 受 Windows 計時器限制，上限為 100 fps。這些是上限，不代表保證達成的幀率。
+- Direct3D 的[排除自身擷取功能](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)需要 Windows 10 2004 以上，較舊版本改用相容模式。
+- HDR、受保護內容、遠端桌面、多顯示卡與實際繪圖筆延遲仍需在對應硬體驗證；目前沒有宣稱特定延遲改善數字。
 
-- Windows 10 / 11
-- Visual Studio 2022 with MSVC
-- CMake 3.20 或以上版本
-- Qt 6.9.0 或以上版本
-- Inno Setup 6，僅打包安裝檔時需要
+## 設定與舊版遷移
 
-### 指令
+設定會先驗證，再以原子替換方式寫入 `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`。第一次啟動原生版時，會匯入同資料夾內的舊 `settings.ini`，保留原檔與既有渲染器偏好。啟動後固定常駐系統匣，取代舊設定視窗與啟動時最小化選項。
+
+`Open diagnostics` 會將記憶體內有數量上限的紀錄匯出到設定檔旁，不需要常駐日誌視窗或持續寫入磁碟。
+
+使用獨立設定檔：
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/path/to/Qt/6.9.0/msvc2022_64"
-cmake --build build --config Release --parallel
-
-New-Item -ItemType Directory -Force deploy
-Copy-Item build/Release/CSP-Grayscale-Viewer.exe deploy/
-Copy-Item build/Release/CSP-Grayscale-Viewer_Console.exe deploy/
-windeployqt --release --no-translations --no-opengl-sw deploy/CSP-Grayscale-Viewer.exe
+.\CSP-Grayscale-Viewer.exe --settings .\test-settings.ini --configure
 ```
 
-## 授權
+## 建置與測試
 
-本專案採用 [MIT License](LICENSE) 授權。
+需要 Windows 10/11 x64、Visual Studio 2022 的「使用 C++ 的桌面開發」與 Windows SDK，以及 CMake 3.20 以上。不需要 Qt 或另外安裝 MSVC 執行階段。
 
-Qt 以動態連結方式使用，遵循 LGPL 授權。使用者可依需求替換安裝目錄中的 Qt runtime DLL。
+```powershell
+.\scripts\test.ps1 -Configuration Release -Smoke
+```
+
+產物位於 `build/native/Release`。GUI 執行檔可單獨攜帶使用；選用的 `_Console.exe` 使用預設設定並輸出主控台紀錄。只有製作安裝程式時才需要 Inno Setup 6。
+
+Debug、桌面渲染整合測試與人工驗收項目見[測試及架構說明](docs/testing.md)。Windows CI 會執行 Debug／Release 核心回歸測試與系統匣啟動測試。
+
+## 示範與授權
+
+![灰階預覽示範](demo/demo.gif)
+
+示範呈現灰階效果，其中的設定介面為原生系統匣改版前的舊版。
+
+[MIT License](LICENSE)。
