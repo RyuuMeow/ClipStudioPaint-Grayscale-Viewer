@@ -22,6 +22,9 @@ namespace csp::tray
         }
         void CenterDialog(HWND dialog)
         {
+            HICON icon = LoadIconW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_APP));
+            SendMessageW(dialog, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+            SendMessageW(dialog, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
             POINT cursor{};
             GetCursorPos(&cursor);
             MONITORINFO info{sizeof(info)};

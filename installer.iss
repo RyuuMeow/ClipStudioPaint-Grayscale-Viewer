@@ -2,6 +2,7 @@
 AppName=CSP Grayscale Viewer
 AppVersion=1.1.0
 AppPublisher=Antigravity
+SetupIconFile=resources\icons\grayscale-viewer.ico
 DefaultDirName={autopf}\CSP-Grayscale-Viewer
 DefaultGroupName=CSP Grayscale Viewer
 

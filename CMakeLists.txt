@@ -30,6 +30,7 @@ add_executable(${PROJECT_NAME} WIN32
     resources/app.rc resources/app.manifest
 )
 target_link_libraries(${PROJECT_NAME} PRIVATE csp_core comctl32)
+target_include_directories(${PROJECT_NAME} PRIVATE resources)
 add_executable(${PROJECT_NAME}_Console src/main_console.cpp resources/app.manifest)
 target_link_libraries(${PROJECT_NAME}_Console PRIVATE csp_core)
 include(CTest)

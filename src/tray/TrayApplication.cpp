@@ -1,6 +1,7 @@
 #include "tray/TrayApplication.h"
 #include "tray/SettingsDialogs.h"
 #include "util/Logger.h"
+#include "../../resources/resource.h"
 #include <commctrl.h>
 #include <windowsx.h>
 #include <fstream>
@@ -43,6 +44,7 @@ namespace csp::tray
         App.SetStateCallback({});
         if (IconAdded) Shell_NotifyIconW(NIM_DELETE, &IconData);
         if (Window) DestroyWindow(Window);
+        if (Icon) DestroyIcon(Icon);
         if (InstanceMutex) { ReleaseMutex(InstanceMutex); CloseHandle(InstanceMutex); }
     }
 
@@ -67,6 +69,7 @@ namespace csp::tray
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpfnWndProc = WindowProc;
         wc.lpszClassName = kWindowClass;
+        wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(IDI_APP));
         if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return 1;
         // Hidden top-level window receives Explorer restart, display and power broadcasts.
         Window = CreateWindowExW(WS_EX_TOOLWINDOW, kWindowClass, title.c_str(), WS_OVERLAPPED,
@@ -78,7 +81,11 @@ namespace csp::tray
         if ((startup.dwFlags & STARTF_USESHOWWINDOW) && startup.wShowWindow == SW_HIDE)
             ShowWindow(Window, SW_HIDE);
         TaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-        Icon = LoadIconW(nullptr, IDI_APPLICATION);
+        if (FAILED(LoadIconMetric(wc.hInstance, MAKEINTRESOURCEW(IDI_TRAY), LIM_SMALL, &Icon)))
+        {
+            ShowError(L"Cannot load the notification icon.");
+            return 1;
+        }
 
         std::wstring error;
         std::error_code ec;
