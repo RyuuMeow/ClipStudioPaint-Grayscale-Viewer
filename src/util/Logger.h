@@ -3,6 +3,8 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <deque>
+#include <atomic>
 #include <cstdio>
 #include <cstdarg>
 #include <Windows.h>
@@ -32,9 +34,9 @@ namespace csp::util
         Logger() = default;
         void Log(LogLevel Level, const wchar_t* Prefix, const wchar_t* Fmt, va_list Args);
 
-        LogLevel Level = LogLevel::Info;
+        std::atomic<LogLevel> Level = LogLevel::Info;
         LogSink SinkCallback;
-        std::vector<std::wstring> Lines;
+        std::deque<std::wstring> Lines;
     };
 
     #define LOG_DEBUG(fmt, ...)   csp::util::Logger::Instance().Debug(fmt, ##__VA_ARGS__)

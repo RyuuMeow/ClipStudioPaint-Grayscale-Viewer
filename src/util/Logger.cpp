@@ -22,7 +22,7 @@ namespace csp::util
     std::vector<std::wstring> Logger::History() const
     {
         std::lock_guard lock(g_logMutex);
-        return Lines;
+        return {Lines.begin(), Lines.end()};
     }
 
     void Logger::Debug(const wchar_t* fmt, ...)
@@ -88,7 +88,7 @@ namespace csp::util
             Lines.emplace_back(line);
             if (Lines.size() > 1000)
             {
-                Lines.erase(Lines.begin());
+                Lines.pop_front();
             }
             sink = SinkCallback;
 

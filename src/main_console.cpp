@@ -1,69 +1,31 @@
 #include "core/Application.h"
 #include "util/Logger.h"
-
 #include <Windows.h>
 
-
-static DWORD GMainThreadId = 0;
-
-static BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType)
+namespace
 {
-    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_CLOSE_EVENT)
+    DWORD MainThreadId = 0;
+    BOOL WINAPI ConsoleCtrlHandler(DWORD type)
     {
-        PostThreadMessageW(GMainThreadId, WM_QUIT, 0, 0);
+        if (type != CTRL_C_EVENT && type != CTRL_CLOSE_EVENT) return FALSE;
+        PostThreadMessageW(MainThreadId, WM_QUIT, 0, 0);
         return TRUE;
     }
-    return FALSE;
 }
 
-// === Console mode entry point ===
-#ifdef CSP_CONSOLE_MODE
-
-int wmain(int, wchar_t* [])
+int wmain()
 {
-    GMainThreadId = GetCurrentThreadId();
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(com)) return 1;
+    MainThreadId = GetCurrentThreadId();
     SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
-
-    csp::core::Application App;
-
-    if (!App.Initialize())
+    int result = 1;
     {
-        LOG_ERROR(L"Initialization failed. Exiting.");
-        return 1;
+        csp::core::Application app;
+        if (app.Initialize()) result = app.RunConsole();
+        else LOG_ERROR(L"Initialization failed. Exiting.");
     }
-
-    return App.RunConsole();
+    SetConsoleCtrlHandler(ConsoleCtrlHandler, FALSE);
+    CoUninitialize();
+    return result;
 }
-
-// === GUI mode entry point (no console window) ===
-#else
-
-int WINAPI wWinMain(HINSTANCE, HINSTANCE,
-                    LPWSTR, int)
-{
-    GMainThreadId = GetCurrentThreadId();
-
-    if (AllocConsole())
-    {
-        FILE* fp = nullptr;
-        _wfreopen_s(&fp, L"CONOUT$", L"w", stdout);
-        _wfreopen_s(&fp, L"CONIN$", L"r", stdin);
-        SetConsoleTitleW(L"CSP Grayscale Viewer");
-    }
-
-    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
-
-    csp::core::Application App;
-
-    if (!App.Initialize())
-    {
-        LOG_ERROR(L"Initialization failed. Exiting.");
-        MessageBoxW(nullptr, L"Failed to initialize. Check console for details.",
-                    L"CSP Grayscale Viewer", MB_ICONERROR);
-        return 1;
-    }
-
-    return App.RunConsole();
-}
-
-#endif

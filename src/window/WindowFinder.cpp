@@ -100,8 +100,8 @@ namespace csp::window
             return {};
         }
 
-        wchar_t Path[MAX_PATH] = {};
-        DWORD Size = MAX_PATH;
+        wchar_t Path[32768] = {};
+        DWORD Size = _countof(Path);
         if (QueryFullProcessImageNameW(HProc, 0, Path, &Size))
         {
             CloseHandle(HProc);

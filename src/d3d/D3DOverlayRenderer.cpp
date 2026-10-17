@@ -1,5 +1,6 @@
 #include "d3d/D3DOverlayRenderer.h"
 #include "util/Logger.h"
+#include "d3d/RenderPolicy.h"
 
 #include <algorithm>
 #include <chrono>
@@ -22,7 +23,6 @@ namespace csp::d3d
     namespace
     {
         constexpr wchar_t kHostClassName[] = L"CSP_D3DOverlay";
-        constexpr UINT kRefreshMessage = WM_APP + 2;
 
         bool IntersectRects(const RECT& A, const RECT& B, RECT& Out)
         {
@@ -81,112 +81,80 @@ namespace csp::d3d
 
     bool D3DOverlayRenderer::Initialize()
     {
-        if (Initialized)
+        if (Initialized) return true;
+        // Earlier Windows versions accept the flag but capture a black rectangle.
+        // WDA_EXCLUDEFROMCAPTURE requires Windows 10 2004 (build 19041).
+        OSVERSIONINFOEXW minimum{sizeof(minimum)};
+        minimum.dwBuildNumber = 19041;
+        if (!VerifyVersionInfoW(&minimum, VER_BUILDNUMBER,
+                VerSetConditionMask(0, VER_BUILDNUMBER, VER_GREATER_EQUAL)))
         {
-            return true;
-        }
-
-        Instance = this;
-
-        if (!CreateHostWindow())
-        {
-            Instance = nullptr;
+            LOG_WARNING(L"D3D capture exclusion requires Windows 10 2004 or later");
             return false;
         }
-
-        if (!InitializeDevice() || !CreateShaders() || !CreateSwapChain(1, 1))
-        {
-            Shutdown();
-            return false;
-        }
-
-        Initialized = true;
-        LOG_INFO(L"D3D overlay renderer initialized");
+        WakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        ReadyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!WakeEvent || !ReadyEvent) { Shutdown(); return false; }
+        Failed.store(false);
+        RefreshLoopRunning.store(true);
+        try { RefreshThread = std::thread([this] { RunWorker(); }); }
+        catch (const std::exception&) { Shutdown(); return false; }
+        WaitForSingleObject(ReadyEvent, INFINITE);
+        Initialized = WorkerReady;
+        if (!Initialized) { Shutdown(); return false; }
         return true;
     }
 
     void D3DOverlayRenderer::Shutdown()
     {
-        if (!Initialized && !HostWnd)
-        {
-            return;
-        }
-
-        Hide();
+        Visible.store(false);
+        Revision.fetch_add(1);
         StopRefreshLoop();
-        ReleaseDeviceResources();
-
-        if (HostWnd)
-        {
-            DestroyWindow(HostWnd);
-            HostWnd = nullptr;
-        }
-
-        TargetWnd = nullptr;
-        CaptureMonitor = nullptr;
-        DeviceMonitor = nullptr;
+        if (ReadyEvent) { CloseHandle(ReadyEvent); ReadyEvent = nullptr; }
+        if (WakeEvent) { CloseHandle(WakeEvent); WakeEvent = nullptr; }
+        RequestedTarget.store(nullptr);
         Initialized = false;
-        Instance = nullptr;
-        LOG_INFO(L"D3D overlay renderer shut down");
+        WorkerReady = false;
+        Presented.store(false);
     }
 
     void D3DOverlayRenderer::Attach(HWND TargetWindow)
     {
-        TargetWnd = TargetWindow;
+        if (RequestedTarget.exchange(TargetWindow) != TargetWindow)
+        {
+            Revision.fetch_add(1);
+            Wake();
+        }
     }
 
     void D3DOverlayRenderer::Detach()
     {
         Hide();
-        TargetWnd = nullptr;
+        RequestedTarget.store(nullptr);
+        Revision.fetch_add(1);
+        Wake();
     }
 
     void D3DOverlayRenderer::Show()
     {
-        if (!Initialized || !TargetWnd || Visible)
-        {
-            return;
-        }
-
-        Visible = true;
-        HasCapturedFrame = false;
-        RenderFrame();
+        if (!Initialized || !RequestedTarget.load() || Visible.exchange(true)) return;
+        Failed.store(false);
+        Revision.fetch_add(1);
         StartRefreshLoop();
-        LOG_INFO(L"D3D grayscale overlay shown");
     }
 
     void D3DOverlayRenderer::Hide()
     {
-        if (!Visible)
-        {
-            return;
-        }
-
-        StopRefreshLoop();
-        ShowWindow(HostWnd, SW_HIDE);
-        Visible = false;
-        HasCapturedFrame = false;
-        LOG_INFO(L"D3D grayscale overlay hidden");
+        if (!Visible.exchange(false)) return;
+        Presented.store(false);
+        Revision.fetch_add(1);
+        Wake();
     }
 
     void D3DOverlayRenderer::SetRefreshRate(int Fps)
     {
-        if (Fps < 1)
-        {
-            Fps = 1;
-        }
-        if (Fps > 240)
-        {
-            Fps = 240;
-        }
-
-        TimerIntervalMs = static_cast<UINT>(1000 / Fps);
-        if (TimerIntervalMs < 1)
-        {
-            TimerIntervalMs = 1;
-        }
-
-        LOG_INFO(L"D3D refresh rate set to %d fps (%u ms)", Fps, TimerIntervalMs);
+        RequestedFps.store(static_cast<UINT>(std::clamp(Fps, 15, 144)));
+        Wake();
     }
 
     bool D3DOverlayRenderer::CreateHostWindow()
@@ -223,7 +191,7 @@ namespace csp::d3d
         }
 
         ApplyClickThroughStyles();
-        return true;
+        return !Failed.load();
     }
 
     void D3DOverlayRenderer::ApplyClickThroughStyles()
@@ -238,18 +206,16 @@ namespace csp::d3d
                    WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
         SetWindowLongPtrW(HostWnd, GWL_EXSTYLE, exStyle);
         SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA);
-        SetWindowDisplayAffinity(HostWnd, WDA_EXCLUDEFROMCAPTURE);
+        if (!SetWindowDisplayAffinity(HostWnd, WDA_EXCLUDEFROMCAPTURE))
+        {
+            LOG_ERROR(L"Cannot exclude D3D overlay from capture (error %u)", GetLastError());
+            ReportFailure();
+        }
         SetWindowPos(
             HostWnd, HWND_TOPMOST,
             0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_FRAMECHANGED
         );
-    }
-
-    bool D3DOverlayRenderer::InitializeDevice()
-    {
-        HMONITOR monitor = MonitorFromWindow(GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
-        return InitializeDeviceForMonitor(monitor);
     }
 
     bool D3DOverlayRenderer::InitializeDeviceForMonitor(HMONITOR Monitor)
@@ -268,7 +234,7 @@ namespace csp::d3d
         for (UINT adapterIndex = 0; ; ++adapterIndex)
         {
             Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
-            if (factory->EnumAdapters1(adapterIndex, adapter.GetAddressOf()) == DXGI_ERROR_NOT_FOUND)
+            if (FAILED(factory->EnumAdapters1(adapterIndex, adapter.GetAddressOf())))
             {
                 break;
             }
@@ -276,7 +242,7 @@ namespace csp::d3d
             for (UINT outputIndex = 0; ; ++outputIndex)
             {
                 Microsoft::WRL::ComPtr<IDXGIOutput> output;
-                if (adapter->EnumOutputs(outputIndex, output.GetAddressOf()) == DXGI_ERROR_NOT_FOUND)
+                if (FAILED(adapter->EnumOutputs(outputIndex, output.GetAddressOf())))
                 {
                     break;
                 }
@@ -333,6 +299,7 @@ namespace csp::d3d
         }
 
         DeviceMonitor = Monitor;
+        ResourcesAllocated.store(true);
         return true;
     }
 
@@ -573,7 +540,7 @@ namespace csp::d3d
         for (UINT i = 0; ; ++i)
         {
             Microsoft::WRL::ComPtr<IDXGIOutput> output;
-            if (adapter->EnumOutputs(i, output.GetAddressOf()) == DXGI_ERROR_NOT_FOUND)
+            if (FAILED(adapter->EnumOutputs(i, output.GetAddressOf())))
             { break; }
             DXGI_OUTPUT_DESC desc = {};
             if (FAILED(output->GetDesc(&desc)) || desc.Monitor != monitor)
@@ -641,14 +608,20 @@ namespace csp::d3d
 
         CaptureWidth = Width;
         CaptureHeight = Height;
+        HasCapturedFrame = false;
+        CaptureInvalid = true;
         return true;
     }
 
     bool D3DOverlayRenderer::RenderFrame()
     {
+        if (!Visible.load() || Revision.load() != FrameRevision) return false;
         if (!TargetWnd || !IsWindow(TargetWnd))
         {
-            Hide();
+            Visible.store(false);
+            ShowWindow(HostWnd, SW_HIDE);
+            Presented.store(false);
+            Notify();
             return false;
         }
 
@@ -662,10 +635,17 @@ namespace csp::d3d
         const int height = targetRect.bottom - targetRect.top;
         if (!EnsureDuplication() || !ResizeSwapChain(width, height) || !EnsureCaptureTexture(width, height))
         {
+            ReportFailure();
             return false;
         }
 
         RECT outputRect = OutputDesc.DesktopCoordinates;
+        if (!CanCaptureWindow(targetRect, outputRect,
+                OutputDesc.Rotation == DXGI_MODE_ROTATION_IDENTITY ? DMDO_DEFAULT : DMDO_90))
+        {
+            ReportFailure();
+            return false;
+        }
         RECT captureRect = {};
         if (!IntersectRects(targetRect, outputRect, captureRect))
         {
@@ -676,11 +656,11 @@ namespace csp::d3d
         DXGI_OUTDUPL_FRAME_INFO frameInfo = {};
         Microsoft::WRL::ComPtr<IDXGIResource> desktopResource;
         HRESULT hr = Duplication->AcquireNextFrame(
-            TimerIntervalMs, &frameInfo, desktopResource.GetAddressOf()
+            0, &frameInfo, desktopResource.GetAddressOf()
         );
         if (hr == DXGI_ERROR_WAIT_TIMEOUT)
         {
-            if (!HasCapturedFrame)
+            if (!HasCapturedFrame || !PresentationPending)
             {
                 return false;
             }
@@ -688,16 +668,32 @@ namespace csp::d3d
         else if (hr == DXGI_ERROR_ACCESS_LOST)
         {
             ReleaseDuplication();
+            HasCapturedFrame = false;
+            CaptureInvalid = true;
+            ShowWindow(HostWnd, SW_HIDE);
+            Presented.store(false);
+            if (++AccessLossCount >= 3) ReportFailure();
             return false;
         }
         else if (FAILED(hr))
         {
             LOG_WARNING(L"AcquireNextFrame failed (hr=0x%08X)", hr);
+            ReleaseDeviceResources();
+            ReportFailure();
             return false;
         }
 
         if (desktopResource)
         {
+            AccessLossCount = 0;
+            // Hardware cursor-only updates do not require another grayscale draw.
+            if (frameInfo.LastPresentTime.QuadPart == 0 && !CaptureInvalid && HasCapturedFrame)
+            {
+                Duplication->ReleaseFrame();
+                if (!PresentationPending) return false;
+            }
+            else
+            {
             Microsoft::WRL::ComPtr<ID3D11Texture2D> desktopTexture;
             hr = desktopResource.As(&desktopTexture);
             if (SUCCEEDED(hr))
@@ -717,12 +713,15 @@ namespace csp::d3d
                     desktopTexture.Get(), 0, &sourceBox
                 );
                 HasCapturedFrame = true;
+                CaptureInvalid = false;
+                PresentationPending = true;
             }
 
             Duplication->ReleaseFrame();
+            }
         }
 
-        if (!HasCapturedFrame)
+        if (!HasCapturedFrame || !Visible.load() || Revision.load() != FrameRevision)
         {
             return false;
         }
@@ -750,7 +749,9 @@ namespace csp::d3d
         ID3D11ShaderResourceView* nullSrvs[] = { nullptr };
         Context->PSSetShaderResources(0, 1, nullSrvs);
 
-        hr = SwapChain->Present(1, 0);
+        // Never wait for the GPU in the control/UI thread (or build a frame backlog).
+        hr = SwapChain->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
         if (FAILED(hr))
         {
             LOG_WARNING(L"D3D Present failed (hr=0x%08X)", hr);
@@ -760,14 +761,18 @@ namespace csp::d3d
                 LOG_WARNING(L"D3D device removed reason: hr=0x%08X", reason);
                 ReleaseDeviceResources();
             }
+            ReportFailure();
             return false;
         }
 
+        PresentationPending = false;
+        FramesPresented.fetch_add(1);
+        if (!Visible.load() || Revision.load() != FrameRevision) return false;
         if (!IsWindowVisible(HostWnd))
         {
-            ApplyClickThroughStyles();
             ShowWindow(HostWnd, SW_SHOWNOACTIVATE);
         }
+        if (!Presented.exchange(true)) Notify();
 
         return true;
     }
@@ -777,6 +782,7 @@ namespace csp::d3d
         if (IsIconic(TargetWnd))
         {
             ShowWindow(HostWnd, SW_HIDE);
+            if (Presented.exchange(false)) Notify();
             return false;
         }
 
@@ -804,6 +810,7 @@ namespace csp::d3d
 
         if (rectChanged)
         {
+            CaptureInvalid = true;
             LastRect = TargetRect;
             SetWindowPos(
                 HostWnd, HWND_TOPMOST,
@@ -815,51 +822,139 @@ namespace csp::d3d
         return true;
     }
 
+    void D3DOverlayRenderer::Wake()
+    {
+        if (WakeEvent) SetEvent(WakeEvent);
+    }
+
+    void D3DOverlayRenderer::Notify()
+    {
+        if (NotifyWindow) PostMessageW(NotifyWindow, NotifyMessage, 0, 0);
+    }
+
+    void D3DOverlayRenderer::ReportFailure()
+    {
+        if (!Failed.exchange(true))
+        {
+            Visible.store(false);
+            Presented.store(false);
+            ShowWindow(HostWnd, SW_HIDE);
+            LOG_WARNING(L"D3D unavailable; requesting Magnification compatibility mode");
+            Notify();
+        }
+    }
+
     void D3DOverlayRenderer::StartRefreshLoop()
     {
-        if (RefreshLoopRunning.exchange(true))
-        {
-            return;
-        }
-
-        RefreshPending.store(false);
-        RefreshThread = std::thread([this]()
-        {
-            auto nextFrame = std::chrono::steady_clock::now();
-
-            while (RefreshLoopRunning.load())
-            {
-                nextFrame += std::chrono::milliseconds(TimerIntervalMs);
-
-                if (!RefreshPending.exchange(true))
-                {
-                    PostMessageW(HostWnd, kRefreshMessage, 0, 0);
-                }
-
-                std::this_thread::sleep_until(nextFrame);
-
-                const auto now = std::chrono::steady_clock::now();
-                if (nextFrame + std::chrono::milliseconds(TimerIntervalMs) < now)
-                {
-                    nextFrame = now;
-                }
-            }
-        });
+        Wake();
     }
 
     void D3DOverlayRenderer::StopRefreshLoop()
     {
-        if (!RefreshLoopRunning.exchange(false))
-        {
-            return;
-        }
+        RefreshLoopRunning.store(false);
+        Wake();
+        if (RefreshThread.joinable()) RefreshThread.join();
+    }
 
-        if (RefreshThread.joinable())
+    void D3DOverlayRenderer::RunWorker()
+    {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        Instance = this;
+        LastRect = {};
+        // A one-shot high-resolution timer paces active frames; inactive mode has no tick.
+        PaceTimer = CreateWaitableTimerExW(nullptr, nullptr, 0x2, TIMER_ALL_ACCESS);
+        if (!PaceTimer) PaceTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        WorkerReady = SUCCEEDED(com) && PaceTimer && CreateHostWindow();
+        SetEvent(ReadyEvent);
+        if (WorkerReady)
         {
-            RefreshThread.join();
+            using Clock = std::chrono::steady_clock;
+            auto nextFrame = Clock::now();
+            auto idleSince = Clock::now();
+            bool wasActive = false;
+            uint64_t lastRevision = 0;
+            while (RefreshLoopRunning.load())
+            {
+                MSG msg{};
+                // A bounded drain prevents unrelated window traffic from starving commands.
+                for (int i = 0; i < 32 && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE); ++i)
+                {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                const auto revision = Revision.load();
+                const bool active = Visible.load() && RequestedTarget.load() && !Failed.load();
+                if (revision != lastRevision)
+                {
+                    // Invalidate all work from the previous target/visibility generation.
+                    TargetWnd = RequestedTarget.load();
+                    HasCapturedFrame = false;
+                    CaptureInvalid = true;
+                    PresentationPending = false;
+                    ReleaseDuplication();
+                    ShowWindow(HostWnd, SW_HIDE);
+                    Presented.store(false);
+                    AccessLossCount = 0;
+                    nextFrame = Clock::now();
+                    lastRevision = revision;
+                }
+                if (RecreateRequested)
+                {
+                    ReleaseDeviceResources();
+                    RecreateRequested = false;
+                }
+                if (!active)
+                {
+                    if (wasActive)
+                    {
+                        ShowWindow(HostWnd, SW_HIDE);
+                        Presented.store(false);
+                        CancelWaitableTimer(PaceTimer);
+                        idleSince = Clock::now();
+                        Notify();
+                    }
+                    wasActive = false;
+                    DWORD wait = INFINITE;
+                    if (Device)
+                    {
+                        const auto idleMs = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - idleSince).count();
+                        if (idleMs >= 5000) ReleaseDeviceResources();
+                        else wait = static_cast<DWORD>(5000 - idleMs);
+                    }
+                    MsgWaitForMultipleObjectsEx(1, &WakeEvent, wait, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                    continue;
+                }
+                wasActive = true;
+                const UINT fps = RequestedFps.load();
+                if (Clock::now() >= nextFrame)
+                {
+                    FrameRevision = revision;
+                    RenderFrame();
+                    const auto period = std::chrono::nanoseconds(1000000000LL / fps);
+                    nextFrame += period;
+                    if (nextFrame < Clock::now()) nextFrame = Clock::now() + period;
+                }
+                const auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(nextFrame - Clock::now()).count();
+                LARGE_INTEGER due{};
+                due.QuadPart = -std::max<long long>(1, remaining / 100);
+                if (!SetWaitableTimer(PaceTimer, &due, 0, nullptr, nullptr, FALSE))
+                {
+                    LOG_ERROR(L"Cannot arm D3D pacing timer (error %u)", GetLastError());
+                    ReportFailure();
+                    continue;
+                }
+                HANDLE waits[]{WakeEvent, PaceTimer};
+                MsgWaitForMultipleObjectsEx(2, waits, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            }
         }
-
-        RefreshPending.store(false);
+        if (HostWnd) ShowWindow(HostWnd, SW_HIDE);
+        ReleaseDeviceResources();
+        if (HostWnd) { DestroyWindow(HostWnd); HostWnd = nullptr; }
+        if (PaceTimer) { CloseHandle(PaceTimer); PaceTimer = nullptr; }
+        TargetWnd = nullptr;
+        Instance = nullptr;
+        Presented.store(false);
+        if (SUCCEEDED(com)) CoUninitialize();
     }
 
     void D3DOverlayRenderer::ReleaseDuplication()
@@ -889,6 +984,9 @@ namespace csp::d3d
         Context.Reset();
         Device.Reset();
         DeviceMonitor = nullptr;
+        ResourcesAllocated.store(false);
+        CaptureInvalid = true;
+        PresentationPending = false;
     }
 
     void D3DOverlayRenderer::ReleaseSwapChainResources()
@@ -906,12 +1004,8 @@ namespace csp::d3d
     {
         switch (Msg)
         {
-        case kRefreshMessage:
-            if (Instance)
-            {
-                Instance->RefreshPending.store(false);
-                Instance->RenderFrame();
-            }
+        case WM_DISPLAYCHANGE:
+            if (Instance) { Instance->RecreateRequested = true; Instance->Wake(); }
             return 0;
 
         case WM_NCHITTEST:

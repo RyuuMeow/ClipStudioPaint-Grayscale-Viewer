@@ -48,6 +48,8 @@ namespace csp::magnification
         }
 
         Instance = this;
+        LastRect = {};
+        Failed = false;
 
         if (!CreateHostWindow())
         {
@@ -87,6 +89,8 @@ namespace csp::magnification
         MagUninitialize();
         Instance = nullptr;
         Initialized = false;
+        TargetWnd = nullptr;
+        LastRect = {};
         LOG_INFO(L"MagnifierOverlay shut down");
     }
 
@@ -180,6 +184,7 @@ namespace csp::magnification
         if (!MagSetColorEffect(MagWnd, const_cast<PMAGCOLOREFFECT>(&kGrayscaleEffect)))
         {
             LOG_WARNING(L"MagSetColorEffect failed (error %u)", GetLastError());
+            return false;
         }
 
         // Exclude host window from capture to prevent feedback loop
@@ -187,6 +192,7 @@ namespace csp::magnification
         if (!MagSetWindowFilterList(MagWnd, MW_FILTERMODE_EXCLUDE, 1, excludeList))
         {
             LOG_WARNING(L"MagSetWindowFilterList failed (error %u)", GetLastError());
+            return false;
         }
 
         return true;
@@ -229,6 +235,7 @@ namespace csp::magnification
         UpdateWindow(MagWnd);
 
         StartRefreshLoop();
+        if (NotifyWindow) PostMessageW(NotifyWindow, NotifyMessage, 0, 0);
         LOG_INFO(L"Grayscale overlay shown");
     }
 
@@ -243,6 +250,7 @@ namespace csp::magnification
         DisableHighResolutionTimer();
         ShowWindow(HostWnd, SW_HIDE);
         Visible = false;
+        if (NotifyWindow) PostMessageW(NotifyWindow, NotifyMessage, 0, 0);
 
         LOG_INFO(L"Grayscale overlay hidden");
     }
@@ -253,17 +261,21 @@ namespace csp::magnification
         {
             fps = 1;
         }
-        if (fps > 240)
+        if (fps > 100)
         {
-            fps = 240;
+            fps = 100;
         }
-        UINT interval = static_cast<UINT>(1000 / fps);
+        UINT interval = static_cast<UINT>((1000 + fps - 1) / fps);
         if (interval < 1)
         {
             interval = 1;
         }
-        TimerIntervalMs = interval;
-        LOG_INFO(L"Refresh rate set to %d fps (%u ms)", fps, interval);
+        if (TimerIntervalMs != interval)
+        {
+            TimerIntervalMs = interval;
+            if (Visible) StartRefreshLoop();
+            LOG_INFO(L"Magnification refresh limit: %d fps (%u ms)", fps, interval);
+        }
     }
 
     void MagnifierOverlay::EnableHighResolutionTimer()
@@ -296,12 +308,17 @@ namespace csp::magnification
 
     void MagnifierOverlay::StartRefreshLoop()
     {
-        if (!HostWnd)
+        if (!HostWnd || !Visible)
         {
             return;
         }
 
-        SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr);
+        if (!SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr))
+        {
+            LOG_ERROR(L"Cannot start Magnification timer (error %u)", GetLastError());
+            Failed = true;
+            Hide();
+        }
     }
 
     void MagnifierOverlay::StopRefreshLoop()
@@ -318,6 +335,7 @@ namespace csp::magnification
 
     void MagnifierOverlay::UpdateOverlay()
     {
+        if (!Visible) return;
         if (!TargetWnd || !IsWindow(TargetWnd))
         {
             Hide();
@@ -345,10 +363,10 @@ namespace csp::magnification
 
         // Get target window's screen rectangle
         // Use DwmGetWindowAttribute to get visual bounds (excluding invisible drop shadow/borders)
-        RECT rc;
+        RECT rc{};
         if (FAILED(DwmGetWindowAttribute(TargetWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(rc))))
         {
-            GetWindowRect(TargetWnd, &rc);
+            if (!GetWindowRect(TargetWnd, &rc)) { Hide(); return; }
         }
 
         int w = rc.right  - rc.left;
@@ -382,7 +400,13 @@ namespace csp::magnification
         // Refresh the captured source every frame. The magnifier control does
         // not reliably pick up high-frequency drawing changes from invalidation alone.
         RECT sourceRect = { rc.left, rc.top, rc.right, rc.bottom };
-        MagSetWindowSource(MagWnd, sourceRect);
+        if (!MagSetWindowSource(MagWnd, sourceRect))
+        {
+            LOG_ERROR(L"MagSetWindowSource failed (error %u)", GetLastError());
+            Failed = true;
+            Hide();
+            return;
+        }
 
         // Always invalidate to refresh content (user may be drawing).
         // FALSE = don't erase background, reduces flicker

@@ -1,60 +1,41 @@
-#include "core/Application.h"
-#include "gui/MainWindow.h"
-#include "util/Logger.h"
-
-#include <QApplication>
-#include <QAbstractNativeEventFilter>
+#include "tray/TrayApplication.h"
 #include <Windows.h>
+#include <shellapi.h>
 
-
-class HotkeyFilter : public QAbstractNativeEventFilter
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int)
 {
-public:
-    explicit HotkeyFilter(csp::core::Application& app) : App(app)
-    {}
-
-    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr*) override
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!argv) return 1;
+    auto directory = csp::core::SettingsDirectory();
+    auto settings = directory.empty() ? std::filesystem::path{} : directory / L"native-settings.ini";
+    bool smokeTest = false;
+    bool configure = false;
+    bool invalid = false;
+    for (int i = 1; i < argc; ++i)
     {
-        if (eventType == "windows_generic_MSG")
-        {
-            auto* msg = static_cast<MSG*>(message);
-            if (msg->message == WM_HOTKEY)
-            {
-                App.HandleNativeHotkey(static_cast<int>(msg->wParam));
-                return true;
-            }
-        }
-        return false;
+        const std::wstring arg(argv[i]);
+        if (arg == L"--settings" && i + 1 < argc) settings = argv[++i];
+        else if (arg == L"--smoke-test") smokeTest = true;
+        else if (arg == L"--configure") configure = true;
+        else if (arg != L"--minimized") invalid = true; // Legacy startup command remains valid.
     }
-
-private:
-    csp::core::Application& App;
-};
-
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, LPWSTR lpCmdLine, int)
-{
-
-    int Argc = 0;
-    QApplication qtApp(Argc, nullptr);
-    qtApp.setQuitOnLastWindowClosed(false);
-
-    csp::core::Application App;
-    if (!App.Initialize())
+    LocalFree(argv);
+    if (invalid || settings.empty())
     {
-        LOG_ERROR(L"Initialization failed.");
+        MessageBoxW(nullptr, L"Usage: CSP-Grayscale-Viewer.exe [--configure] [--settings <path>]\nThe application runs in the Windows notification area.", L"CSP Grayscale Viewer", MB_OK | MB_ICONERROR);
         return 1;
     }
-
-    HotkeyFilter Filter(App);
-    qtApp.installNativeEventFilter(&Filter);
-
-    csp::gui::MainWindow Window(App);
-
-    std::wstring CmdLine(lpCmdLine ? lpCmdLine : L"");
-    if (CmdLine.find(L"--minimized") == std::wstring::npos)
+    std::error_code error;
+    settings = std::filesystem::absolute(settings, error).lexically_normal();
+    if (error) return 1;
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(com)) return 1;
+    int result;
     {
-        Window.show();
+        csp::tray::TrayApplication app;
+        result = app.Run(settings, smokeTest, configure);
     }
-
-    return qtApp.exec();
+    CoUninitialize();
+    return result;
 }

@@ -38,7 +38,9 @@ namespace csp::magnification
         void SetRefreshRate(int fps);
 
         bool IsVisible() const
-        { return Visible; }
+        { return Visible && HostWnd && IsWindowVisible(HostWnd); }
+        bool HasFailed() const { return Failed; }
+        void SetNotificationWindow(HWND Window, UINT Message) { NotifyWindow = Window; NotifyMessage = Message; }
         bool IsInitialized() const
         { return Initialized; }
         HWND TargetWindow() const
@@ -63,6 +65,9 @@ namespace csp::magnification
         bool Visible     = false;
         bool Initialized = false;
         bool HighResolutionTimerEnabled = false;
+        bool Failed = false;
+        HWND NotifyWindow = nullptr;
+        UINT NotifyMessage = 0;
         int ShowFrames   = 0;
 
         // Cached target rect to skip redundant SetWindowPos when CSP hasn't moved

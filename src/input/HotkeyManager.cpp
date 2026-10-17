@@ -1,4 +1,5 @@
 #include "input/HotkeyManager.h"
+#include "input/Hotkey.h"
 #include "util/Logger.h"
 
 namespace csp::input
@@ -10,7 +11,7 @@ namespace csp::input
 
     bool HotkeyManager::Register(int Id, UINT Modifiers, UINT Vk, std::function<void()> Action)
     {
-        if (!RegisterHotKey(nullptr, Id, Modifiers, Vk))
+        if (!RegisterHotKey(MessageWindow, Id, Modifiers | MOD_NOREPEAT, Vk))
         {
             LOG_ERROR(L"RegisterHotKey failed for id=%d vk=0x%X (error %u)", Id, Vk, GetLastError());
             return false;
@@ -18,25 +19,7 @@ namespace csp::input
 
         Bindings.push_back({Id, Modifiers, Vk, std::move(Action)});
 
-        std::wstring modStr;
-        if (Modifiers & MOD_CONTROL)
-        {
-            modStr += L"Ctrl+";
-        }
-        if (Modifiers & MOD_ALT)
-        {
-            modStr += L"Alt+";
-        }
-        if (Modifiers & MOD_SHIFT)
-        {
-            modStr += L"Shift+";
-        }
-
-        wchar_t keyName[64] = {};
-        UINT scanCode = MapVirtualKeyW(Vk, MAPVK_VK_TO_VSC);
-        GetKeyNameTextW(static_cast<LONG>(scanCode << 16), keyName, _countof(keyName));
-
-        LOG_INFO(L"Hotkey registered: %s%s (id=%d)", modStr.c_str(), keyName, Id);
+        LOG_INFO(L"Hotkey registered: %s (id=%d)", FormatHotkey({Modifiers, Vk}).c_str(), Id);
         return true;
     }
 
@@ -44,13 +27,26 @@ namespace csp::input
     {
         for (auto& binding: Bindings)
         {
-            UnregisterHotKey(nullptr, binding.Id);
+            UnregisterHotKey(MessageWindow, binding.Id);
         }
         if (!Bindings.empty())
         {
             LOG_INFO(L"Unregistered %zu hotkeys", Bindings.size());
         }
         Bindings.clear();
+    }
+
+    void HotkeyManager::Unregister(int Id)
+    {
+        for (auto it = Bindings.begin(); it != Bindings.end(); ++it)
+        {
+            if (it->Id == Id)
+            {
+                UnregisterHotKey(MessageWindow, Id);
+                Bindings.erase(it);
+                return;
+            }
+        }
     }
 
     void HotkeyManager::HandleHotkey(int Id)
