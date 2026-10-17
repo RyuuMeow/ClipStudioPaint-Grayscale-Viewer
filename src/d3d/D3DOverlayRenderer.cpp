@@ -205,7 +205,8 @@ namespace csp::d3d
         exStyle |= WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED |
                    WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_NOREDIRECTIONBITMAP;
         SetWindowLongPtrW(HostWnd, GWL_EXSTYLE, exStyle);
-        SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA);
+        // Do not expose the opaque swap chain before its first frame is composed.
+        SetLayeredWindowAttributes(HostWnd, 0, 0, LWA_ALPHA);
         if (!SetWindowDisplayAffinity(HostWnd, WDA_EXCLUDEFROMCAPTURE))
         {
             LOG_ERROR(L"Cannot exclude D3D overlay from capture (error %u)", GetLastError());
@@ -749,9 +750,21 @@ namespace csp::d3d
         ID3D11ShaderResourceView* nullSrvs[] = { nullptr };
         Context->PSSetShaderResources(0, 1, nullSrvs);
 
+        // A present submitted while hidden can be discarded by the compositor.
+        // Prime the host at minimum nonzero opacity before queueing the first one.
+        if (!IsWindowVisible(HostWnd))
+        {
+            if (!SetLayeredWindowAttributes(HostWnd, 0, 1, LWA_ALPHA))
+            {
+                LOG_ERROR(L"Cannot prepare transparent D3D host (error %u)", GetLastError());
+                ReportFailure();
+                return false;
+            }
+            ShowWindow(HostWnd, SW_SHOWNOACTIVATE);
+        }
         // Never wait for the GPU in the control/UI thread (or build a frame backlog).
         hr = SwapChain->Present(1, DXGI_PRESENT_DO_NOT_WAIT);
-        if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+        if (hr == DXGI_ERROR_WAS_STILL_DRAWING || hr == DXGI_STATUS_OCCLUDED) return false;
         if (FAILED(hr))
         {
             LOG_WARNING(L"D3D Present failed (hr=0x%08X)", hr);
@@ -768,13 +781,65 @@ namespace csp::d3d
         PresentationPending = false;
         FramesPresented.fetch_add(1);
         if (!Visible.load() || Revision.load() != FrameRevision) return false;
-        if (!IsWindowVisible(HostWnd))
-        {
-            ShowWindow(HostWnd, SW_SHOWNOACTIVATE);
-        }
+        if (!Presented.load() && !RevealFirstFrame()) return false;
         if (!Presented.exchange(true)) Notify();
 
         return true;
+    }
+
+    bool D3DOverlayRenderer::RevealFirstFrame()
+    {
+        // A successful Present is a queued frame, not a completed composition.
+        // Synchronize only this reveal; normal drawing keeps its nonblocking path.
+        const auto start = std::chrono::steady_clock::now();
+        const auto deadline = start + std::chrono::milliseconds(250);
+        UINT submitted = 0;
+        HRESULT hr = SwapChain->GetLastPresentCount(&submitted);
+        if (SUCCEEDED(hr)) hr = CompositionDevice->WaitForCommitCompletion();
+        while (SUCCEEDED(hr))
+        {
+            if (!RefreshLoopRunning.load() || !Visible.load() || Revision.load() != FrameRevision)
+            {
+                ShowWindow(HostWnd, SW_HIDE);
+                return false;
+            }
+            // Also updates statistics on systems using a hardware flip queue.
+            hr = DwmFlush();
+            if (FAILED(hr)) break;
+            DXGI_FRAME_STATISTICS completed{};
+            hr = SwapChain->GetFrameStatistics(&completed);
+            // The first query can mark the beginning of a statistics sequence.
+            if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) hr = S_FALSE;
+            if (FAILED(hr)) break;
+            if (hr == S_OK && static_cast<INT>(completed.PresentCount - submitted) >= 0)
+            {
+                if (!RefreshLoopRunning.load() || !Visible.load() || Revision.load() != FrameRevision)
+                {
+                    ShowWindow(HostWnd, SW_HIDE);
+                    return false;
+                }
+                if (!SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA))
+                {
+                    hr = HRESULT_FROM_WIN32(GetLastError());
+                    break;
+                }
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count();
+                LOG_DEBUG(L"First frame ready: submitted=%u composed=%u wait=%lld ms",
+                    submitted, completed.PresentCount, elapsed);
+                return true;
+            }
+            if (std::chrono::steady_clock::now() >= deadline)
+            {
+                hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
+                break;
+            }
+            // Yield if DWM returned immediately; visibility commands can cancel.
+            WaitForSingleObject(WakeEvent, 1);
+        }
+        LOG_WARNING(L"Cannot confirm first D3D composition (hr=0x%08X)", hr);
+        ReportFailure();
+        return false;
     }
 
     bool D3DOverlayRenderer::UpdateTargetRect(RECT& TargetRect)

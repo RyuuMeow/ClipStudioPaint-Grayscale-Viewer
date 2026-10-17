@@ -28,6 +28,14 @@ namespace
         return predicate();
     }
     void PumpFor(DWORD duration) { WaitUntil([] { return false; }, duration); }
+    BYTE Opacity(HWND window)
+    {
+        BYTE alpha = 255;
+        DWORD flags = 0;
+        Check(GetLayeredWindowAttributes(window, nullptr, &alpha, &flags) && (flags & LWA_ALPHA),
+            "overlay uses explicit opacity");
+        return alpha;
+    }
     HWND OwnOverlay(const wchar_t* className)
     {
         struct Query { const wchar_t* Name; HWND Result = nullptr; } query{className};
@@ -66,13 +74,15 @@ namespace
         csp::d3d::D3DOverlayRenderer renderer;
         Check(renderer.Initialize(), "D3D worker initialization");
         Check(!renderer.HasDeviceResources(), "D3D initializes without a GPU allocation");
+        const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
+        Check(overlay && !IsWindowVisible(overlay) && Opacity(overlay) == 0,
+            "unprepared D3D host starts transparent");
         renderer.Attach(target);
         renderer.SetRefreshRate(60);
         renderer.Show();
         Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "D3D first-frame timeout");
         Check(renderer.IsVisible() && !renderer.HasFailed(), "D3D first frame (requires unlocked GPU desktop)");
-        const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
-        Check(overlay && IsWindowVisible(overlay), "D3D overlay really visible");
+        Check(IsWindowVisible(overlay) && Opacity(overlay) == 255, "prepared D3D overlay really visible");
         const auto beforeResize = renderer.PresentedFrameCount();
         SetWindowPos(target, nullptr, 110, 110, 350, 240, SWP_NOZORDER | SWP_NOACTIVATE);
         InvalidateRect(target, nullptr, FALSE);
@@ -96,6 +106,21 @@ namespace
             renderer.Show();
             Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "D3D resumes");
             Check(!renderer.HasFailed(), "D3D resume remains healthy");
+            Check(Opacity(overlay) == 255, "D3D becomes opaque after preparation");
+        }
+        for (int i = 0; i < 8; ++i)
+        {
+            renderer.Hide();
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "D3D hides before warm-up cancellation");
+            renderer.Show();
+            Check(WaitUntil([&]
+            {
+                return IsWindowVisible(overlay) && Opacity(overlay) == 1;
+            }), "D3D primes the first frame without exposing an opaque blank window");
+            renderer.Hide();
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "first-frame wait can be cancelled");
+            PumpFor(50);
+            Check(!IsWindowVisible(overlay) && !renderer.IsVisible(), "cancelled first frame stays hidden");
         }
         renderer.Detach();
         Check(WaitUntil([&] { return !renderer.HasDeviceResources(); }, 6500), "D3D frees idle GPU resources");
@@ -106,7 +131,7 @@ namespace
         Check(!renderer.HasFailed(), "D3D restart remains healthy");
         renderer.Shutdown();
         Check(!IsWindow(overlay) && !renderer.HasDeviceResources(), "D3D shutdown releases window and device");
-        std::cout << "D3D: first frame, resize, 20 hide/show cycles, idle release and restart passed.\n";
+        std::cout << "D3D: transparent preparation, 20 hide/show cycles, 8 warm-up cancellations, resize, idle release and restart passed.\n";
     }
     void TestMagnification(HWND target)
     {

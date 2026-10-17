@@ -50,6 +50,7 @@ namespace csp::d3d
         bool EnsureDuplication();
         bool EnsureCaptureTexture(int Width, int Height);
         bool RenderFrame();
+        bool RevealFirstFrame();
         bool UpdateTargetRect(RECT& TargetRect);
 
         void StartRefreshLoop();
