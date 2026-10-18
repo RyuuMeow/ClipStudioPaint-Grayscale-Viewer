@@ -19,6 +19,8 @@ New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion
 
 **Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it when capture fails, the target spans monitors, or the display is rotated. Switching back to the target retries a transient D3D failure. The tray status identifies the active mode.
 
+Invisible sizing borders on a maximized window are excluded from capture, so they do not cause a false multi-monitor fallback. Notification-area updates run in the background and keep only the latest status, preventing slow Explorer updates from blocking shortcuts.
+
 Magnification also runs on its own worker, including initialization and idle cleanup, so capture work does not hold up shortcut processing. Rapid changes cancel obsolete preview requests; the status becomes active after the transparent warm-up finishes.
 
 - **Automatic** follows the target monitor's refresh rate. Explicit limits are also capped to the monitor rate.

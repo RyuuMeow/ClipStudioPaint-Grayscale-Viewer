@@ -14,7 +14,6 @@ namespace csp::tray
         constexpr UINT kTrayMessage = WM_APP + 1;
         constexpr UINT kShowMenu = WM_APP + 2;
         constexpr UINT_PTR kSmokeExit = 1;
-        constexpr UINT_PTR kIconRetry = 2;
         enum CommandId : UINT
         {
             Toggle = 100, Targets, Shortcut, FocusOnly, AutoStart, UseD3D, UseMag,
@@ -42,9 +41,9 @@ namespace csp::tray
     TrayApplication::~TrayApplication()
     {
         App.SetStateCallback({});
+        IconUpdates.Shutdown();
         if (SessionStarted && !SaveDiagnostics())
             LOG_WARNING(L"Cannot save session diagnostics on exit");
-        if (IconAdded) Shell_NotifyIconW(NIM_DELETE, &IconData);
         if (Window) DestroyWindow(Window);
         if (Icon) DestroyIcon(Icon);
         if (InstanceMutex) { ReleaseMutex(InstanceMutex); CloseHandle(InstanceMutex); }
@@ -109,16 +108,16 @@ namespace csp::tray
         if (!App.Initialize(Config)) { ShowError(L"Cannot initialize window tracking. See diagnostics or retry."); return 1; }
         SessionStarted = true;
         App.SetStateCallback([this](bool, bool) { UpdateIcon(); });
-        if (!AddIcon()) SetTimer(Window, kIconRetry, 2000, nullptr);
+        if (!StartIcon()) { ShowError(L"Cannot start the notification icon worker."); return 1; }
         if (smokeTest) SetTimer(Window, kSmokeExit, 1500, nullptr);
         App.ForceNotifyState();
         if (configure && !smokeTest) PostMessageW(Window, WM_COMMAND, Targets, 0);
         return App.RunConsole();
     }
 
-    bool TrayApplication::AddIcon()
+    bool TrayApplication::StartIcon()
     {
-        IconData = {};
+        NOTIFYICONDATAW IconData{};
         IconData.cbSize = sizeof(IconData);
         IconData.hWnd = Window;
         IconData.uID = 1;
@@ -126,23 +125,12 @@ namespace csp::tray
         IconData.uCallbackMessage = kTrayMessage;
         IconData.hIcon = Icon;
         wcscpy_s(IconData.szTip, L"CSP Grayscale Viewer");
-        IconAdded = Shell_NotifyIconW(NIM_ADD, &IconData) != FALSE;
-        if (IconAdded)
-        {
-            IconData.uVersion = NOTIFYICON_VERSION_4;
-            Shell_NotifyIconW(NIM_SETVERSION, &IconData);
-            KillTimer(Window, kIconRetry);
-            UpdateIcon();
-        }
-        return IconAdded;
+        return IconUpdates.Start(IconData);
     }
     void TrayApplication::UpdateIcon()
     {
-        if (!IconAdded) return;
         const auto status = L"CSP Grayscale Viewer - " + App.StatusText();
-        wcsncpy_s(IconData.szTip, status.c_str(), _TRUNCATE);
-        IconData.uFlags = NIF_TIP | NIF_SHOWTIP;
-        Shell_NotifyIconW(NIM_MODIFY, &IconData);
+        IconUpdates.UpdateTooltip(status);
     }
     void TrayApplication::ShowMenu()
     {
@@ -293,8 +281,7 @@ namespace csp::tray
         {
             if (self->TaskbarCreated && msg == self->TaskbarCreated)
             {
-                self->IconAdded = false;
-                if (!self->AddIcon()) SetTimer(hwnd, kIconRetry, 2000, nullptr);
+                self->IconUpdates.Recreate();
                 return 0;
             }
             if (msg == kTrayMessage)
@@ -309,7 +296,6 @@ namespace csp::tray
             if (msg == WM_TIMER)
             {
                 if (wp == kSmokeExit) self->App.Quit();
-                else if (wp == kIconRetry) self->AddIcon();
                 return 0;
             }
             if (msg == WM_DISPLAYCHANGE) { self->App.DisplayConfigurationChanged(); return 0; }

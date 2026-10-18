@@ -1,8 +1,11 @@
 #include "core/Settings.h"
 #include "core/Application.h"
 #include "d3d/RenderPolicy.h"
+#include "window/WindowGeometry.h"
+#include "tray/NotificationIcon.h"
 #include <Windows.h>
 #include <fstream>
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 
@@ -100,6 +103,19 @@ namespace
         Check(!CanCaptureWindow({-500, 10, 500, 1000}, monitor, DMDO_DEFAULT), "spanning window requires compatibility fallback");
         Check(!CanCaptureWindow({-1900, 10, -20, 1000}, monitor, DMDO_90), "portrait requires compatibility fallback");
         Check(!CanCaptureWindow({-1900, 10, -1900, 1000}, monitor, DMDO_DEFAULT), "empty window rejected");
+        using csp::window::ClipMaximizedFrame;
+        const RECT ultrawide{0, 0, 3440, 1440};
+        const RECT maximized{-8, -8, 3448, 1448};
+        const RECT clipped = ClipMaximizedFrame(maximized, ultrawide, true, {8, 8});
+        Check(EqualRect(&clipped, &ultrawide), "reported maximized eight-pixel border is excluded");
+        Check(CanCaptureWindow(clipped, ultrawide, DMDO_DEFAULT), "maximized target stays on Direct3D");
+        Check(!CanCaptureWindow(ClipMaximizedFrame(maximized, ultrawide, false, {8, 8}), ultrawide, DMDO_DEFAULT),
+            "restored spanning target is not cropped");
+        Check(!CanCaptureWindow(ClipMaximizedFrame({-8, -8, 4000, 1448}, ultrawide, true, {8, 8}), ultrawide, DMDO_DEFAULT),
+            "maximized target extending beyond sizing border still falls back");
+        const RECT scaled = ClipMaximizedFrame({-1936, -16, 16, 1096}, monitor, true, {16, 16});
+        Check(EqualRect(&scaled, &monitor), "scaled border and negative monitor coordinates are supported");
+        Check(!CanCaptureWindow(clipped, ultrawide, DMDO_90), "border normalization does not enable rotated capture");
         using csp::d3d::EffectiveRefreshRate;
         Check(EffectiveRefreshRate(144, 60, false) == 60, "do not exceed monitor refresh");
         Check(EffectiveRefreshRate(0, 144, false) == 144, "automatic rate follows monitor");
@@ -138,6 +154,82 @@ namespace
         SendMessageW(control, WM_HOTKEY, 1, 0);
         Check(!app.IsGrayscaleEnabled(), "queued hotkey ignored after unregistration");
     }
+
+    void SlowNotificationIconDoesNotBlockRequests()
+    {
+        struct Call { DWORD Action; std::wstring Tip; DWORD Thread; };
+        struct Gate
+        {
+            std::mutex Mutex;
+            std::condition_variable Wake;
+            bool Entered = false, Released = false;
+            std::vector<Call> Calls;
+        } gate;
+        csp::tray::NotificationIcon icon([&](DWORD action, PNOTIFYICONDATAW data) -> BOOL
+        {
+            std::unique_lock lock(gate.Mutex);
+            gate.Calls.push_back({action, data->szTip, GetCurrentThreadId()});
+            if (action == NIM_MODIFY && std::wstring(data->szTip) == L"hold")
+            {
+                gate.Entered = true;
+                gate.Wake.notify_all();
+                gate.Wake.wait(lock, [&] { return gate.Released; });
+            }
+            return TRUE;
+        });
+        // Unblock the fake Shell call before the worker is joined, including on failure.
+        struct Release
+        {
+            Gate& Value;
+            void Now()
+            {
+                std::lock_guard lock(Value.Mutex);
+                Value.Released = true;
+                Value.Wake.notify_all();
+            }
+            ~Release() { Now(); }
+        } release{gate};
+        const auto settled = [&]
+        {
+            const ULONGLONG deadline = GetTickCount64() + 2000;
+            while (!icon.IsSynchronized() && GetTickCount64() < deadline) Sleep(1);
+            return icon.IsSynchronized();
+        };
+        NOTIFYICONDATAW data{};
+        data.cbSize = sizeof(data);
+        wcscpy_s(data.szTip, L"initial");
+        Check(icon.Start(data) && settled(), "notification worker registers with injected Shell transport");
+        icon.UpdateTooltip(L"hold");
+        {
+            std::unique_lock lock(gate.Mutex);
+            Check(gate.Wake.wait_for(lock, std::chrono::seconds(2), [&] { return gate.Entered; }),
+                "notification transport is deliberately blocked");
+        }
+        const auto start = std::chrono::steady_clock::now();
+        for (int i = 0; i < 100; ++i) icon.UpdateTooltip(L"intermediate " + std::to_wstring(i));
+        icon.UpdateTooltip(L"final");
+        Check(std::chrono::steady_clock::now() - start < std::chrono::milliseconds(50),
+            "tooltip requests do not wait for a blocked Shell call");
+        Check(!icon.IsSynchronized(), "blocked icon has not yet applied the latest request");
+        release.Now();
+        Check(settled(), "icon applies the latest tooltip after Shell unblocks");
+        icon.Recreate();
+        Check(settled(), "Explorer recreation registers the latest icon state");
+        icon.Shutdown();
+        unsigned adds = 0, deletes = 0, versions = 0, modifies = 0;
+        for (const auto& call : gate.Calls)
+        {
+            Check(call.Thread != GetCurrentThreadId(), "all Shell operations run outside the UI thread");
+            Check(call.Tip.find(L"intermediate") == std::wstring::npos, "obsolete tooltip requests are coalesced");
+            adds += call.Action == NIM_ADD;
+            deletes += call.Action == NIM_DELETE;
+            versions += call.Action == NIM_SETVERSION;
+            modifies += call.Action == NIM_MODIFY;
+        }
+        Check(adds == 2 && deletes == 2 && versions == 2 && modifies == 2,
+            "register, version, coalesced update, recreation and shutdown stay ordered");
+        Check(!icon.IsRegistered(), "shutdown removes the notification icon");
+    }
 }
 
 int main()
@@ -151,6 +243,7 @@ int main()
         Hotkeys();
         GeometryAndPacing();
         NativeHotkeyRoutingAndConflict();
+        SlowNotificationIconDoesNotBlockRequests();
         std::cout << "All core regression tests passed.\n";
         return 0;
     }

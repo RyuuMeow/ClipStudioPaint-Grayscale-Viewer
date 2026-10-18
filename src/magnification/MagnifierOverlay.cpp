@@ -1,5 +1,6 @@
 #include "magnification/MagnifierOverlay.h"
 #include "util/Logger.h"
+#include "window/WindowGeometry.h"
 #include <dwmapi.h>
 #include <mmsystem.h>
 #include <shobjidl.h>
@@ -330,6 +331,10 @@ namespace csp::magnification
         {
             if (!GetWindowRect(TargetWnd, &rc)) { HideOnWorker(); return; }
         }
+
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(TargetWnd, MONITOR_DEFAULTTONEAREST), &monitor))
+            rc = window::VisibleCaptureBounds(TargetWnd, rc, monitor.rcMonitor);
 
         int w = rc.right  - rc.left;
         int h = rc.bottom - rc.top;

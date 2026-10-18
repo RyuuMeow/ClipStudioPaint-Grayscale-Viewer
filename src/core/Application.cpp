@@ -1,5 +1,6 @@
 #include "core/Application.h"
 #include "d3d/RenderPolicy.h"
+#include "window/WindowGeometry.h"
 #include "util/Logger.h"
 #include <algorithm>
 #include <dwmapi.h>
@@ -60,7 +61,11 @@ namespace csp::core
                 if (delay >= 50) LOG_WARNING(L"Shortcut waited %u ms in the message queue", delay);
             }
             TranslateMessage(&msg);
+            const ULONGLONG dispatchStarted = GetTickCount64();
             DispatchMessageW(&msg);
+            const ULONGLONG dispatchMs = GetTickCount64() - dispatchStarted;
+            if (dispatchMs >= 50)
+                LOG_WARNING(L"UI message 0x%04X took %llu ms", msg.message, dispatchMs);
         }
         return result < 0 ? 1 : static_cast<int>(msg.wParam);
     }
@@ -163,7 +168,10 @@ namespace csp::core
             OverlayError = false;
         }
         SyncHotkey(target != nullptr);
+        const ULONGLONG syncStarted = GetTickCount64();
         SyncOverlay(target);
+        const ULONGLONG syncMs = GetTickCount64() - syncStarted;
+        if (syncMs >= 50) LOG_WARNING(L"Renderer selection took %llu ms", syncMs);
         NotifyState();
     }
     void Application::SyncHotkey(bool focused)
@@ -209,14 +217,19 @@ namespace csp::core
         const bool monitorInfoKnown = GetMonitorInfoW(monitor, &info) != FALSE;
         const bool modeKnown = monitorInfoKnown && EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode);
         const bool monitorKnown = monitorInfoKnown && modeKnown;
+        const RECT captureRect = monitorInfoKnown ? window::VisibleCaptureBounds(target, rect, info.rcMonitor) : rect;
         const int monitorRate = monitorKnown ? static_cast<int>(mode.dmDisplayFrequency) : 60;
         bool useD3D = PreferD3D && !D3DFailed && monitorKnown &&
-            d3d::CanCaptureWindow(rect, info.rcMonitor, mode.dmDisplayOrientation);
+            d3d::CanCaptureWindow(captureRect, info.rcMonitor, mode.dmDisplayOrientation);
         FallbackReason = !PreferD3D ? L"" : D3DFailed ? L"capture unavailable" :
             !monitorKnown ? L"display information unavailable" :
             mode.dmDisplayOrientation != DMDO_DEFAULT ? L"rotated display" :
             !useD3D ? L"window extends beyond one display" : L"";
         Backend desired = useD3D ? Backend::Direct3D : Backend::Magnification;
+        if (CurrentBackend != desired && !EqualRect(&rect, &captureRect))
+            LOG_INFO(L"Maximized border excluded: bounds=(%ld,%ld)-(%ld,%ld), capture=(%ld,%ld)-(%ld,%ld)",
+                rect.left, rect.top, rect.right, rect.bottom,
+                captureRect.left, captureRect.top, captureRect.right, captureRect.bottom);
         if (CurrentBackend != desired && !FallbackReason.empty())
         {
             LOG_INFO(L"Magnification fallback: %s; target=(%ld,%ld)-(%ld,%ld), monitor=(%ld,%ld)-(%ld,%ld), orientation=%u",

@@ -1,5 +1,6 @@
 #pragma once
 #include "core/Application.h"
+#include "tray/NotificationIcon.h"
 #include <shellapi.h>
 
 namespace csp::tray
@@ -11,7 +12,7 @@ namespace csp::tray
         int Run(const std::filesystem::path& SettingsPath, bool SmokeTest = false, bool Configure = false);
     private:
         static LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
-        bool AddIcon();
+        bool StartIcon();
         void UpdateIcon();
         void ShowMenu();
         void Command(UINT Id);
@@ -26,9 +27,8 @@ namespace csp::tray
         HWND Window = nullptr;
         HANDLE InstanceMutex = nullptr;
         HICON Icon = nullptr;
-        NOTIFYICONDATAW IconData{};
+        NotificationIcon IconUpdates;
         UINT TaskbarCreated = 0;
-        bool IconAdded = false;
         bool MenuOpen = false;
         bool DialogOpen = false;
         bool SessionStarted = false;

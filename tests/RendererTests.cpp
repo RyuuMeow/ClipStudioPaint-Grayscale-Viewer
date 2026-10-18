@@ -2,6 +2,9 @@
 #include "magnification/MagnifierOverlay.h"
 #include "util/Logger.h"
 #include "core/Application.h"
+#include "d3d/RenderPolicy.h"
+#include "window/WindowGeometry.h"
+#include "tray/NotificationIcon.h"
 #include <Windows.h>
 #include <dwmapi.h>
 #include <iostream>
@@ -11,6 +14,7 @@
 
 namespace
 {
+    DWORD LongestHotkeyQueueWait = 0;
     void Check(bool condition, const char* message)
     {
         if (!condition) throw std::runtime_error(message);
@@ -23,6 +27,8 @@ namespace
             MSG msg{};
             while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
             {
+                if (msg.message == WM_HOTKEY)
+                    LongestHotkeyQueueWait = (std::max)(LongestHotkeyQueueWait, GetTickCount() - msg.time);
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -59,13 +65,21 @@ namespace
     }
     LRESULT CALLBACK TargetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     {
+        if (msg == WM_TIMER && wp == 2)
+        {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, GetWindowLongPtrW(hwnd, GWLP_USERDATA) + 1);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         if (msg == WM_PAINT)
         {
             PAINTSTRUCT paint{};
             HDC dc = BeginPaint(hwnd, &paint);
             RECT rect{};
             GetClientRect(hwnd, &rect);
-            HBRUSH brush = CreateSolidBrush(RGB(220, 60, 100));
+            // One-channel, one-level changes exercise capture without flashing.
+            const int shade = static_cast<int>(GetWindowLongPtrW(hwnd, GWLP_USERDATA) % 2);
+            HBRUSH brush = CreateSolidBrush(RGB(220 + shade, 60, 100));
             FillRect(dc, &rect, brush);
             DeleteObject(brush);
             EndPaint(hwnd, &paint);
@@ -215,6 +229,7 @@ namespace
     }
     void TestApplicationToggles(HWND target, bool useD3D)
     {
+        LongestHotkeyQueueWait = 0;
         // Exercise the real hotkey-to-application path using only this test's windows.
         wchar_t executable[MAX_PATH]{};
         GetModuleFileNameW(nullptr, executable, _countof(executable));
@@ -237,27 +252,23 @@ namespace
             if (process == GetCurrentProcessId()) break;
         }
         Check(control != nullptr, "find own application control window");
-        struct TestIcon
-        {
-            NOTIFYICONDATAW Data{};
-            ~TestIcon() { Shell_NotifyIconW(NIM_DELETE, &Data); }
-        } icon;
-        icon.Data.cbSize = sizeof(icon.Data);
-        icon.Data.hWnd = control;
-        icon.Data.uID = 37;
-        icon.Data.uFlags = NIF_ICON | NIF_TIP;
-        icon.Data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
-        wcscpy_s(icon.Data.szTip, L"CSP toggle integration test");
-        Check(Shell_NotifyIconW(NIM_ADD, &icon.Data) != FALSE, "create own test notification icon");
+        csp::tray::NotificationIcon icon;
+        NOTIFYICONDATAW iconData{};
+        iconData.cbSize = sizeof(iconData);
+        iconData.hWnd = control;
+        iconData.uID = 37;
+        iconData.uFlags = NIF_ICON | NIF_TIP;
+        iconData.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        wcscpy_s(iconData.szTip, L"CSP toggle integration test");
+        Check(icon.Start(iconData) && WaitUntil([&] { return icon.IsRegistered(); }), "create own test notification icon");
         double slowestIcon = 0;
         app.SetStateCallback([&](bool, bool)
         {
-            icon.Data.uFlags = NIF_TIP | NIF_SHOWTIP;
-            wcsncpy_s(icon.Data.szTip, app.StatusText().c_str(), _TRUNCATE);
             const auto start = std::chrono::steady_clock::now();
-            Shell_NotifyIconW(NIM_MODIFY, &icon.Data);
-            slowestIcon = (std::max)(slowestIcon, std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start).count());
+            icon.UpdateTooltip(app.StatusText());
+            const auto iconMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count();
+            slowestIcon = (std::max)(slowestIcon, iconMs);
         });
         const auto start = std::chrono::steady_clock::now();
         double slowest = 0;
@@ -273,13 +284,31 @@ namespace
         }
         std::cout << "101 application toggles: " << std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count() << " ms, slowest handler: " << slowest << " ms\n";
+        std::cout << "Slowest icon request so far: " << slowestIcon << " ms\n";
         Check(slowest < 100, "renderer startup/capture must not block the shortcut handler for 100 ms");
         Check(WaitUntil([&] { return app.StatusText() == activeStatus; }),
             "rapid toggles settle on the last requested renderer state");
+        if (IsZoomed(target))
+        {
+            MONITORINFO monitor{sizeof(monitor)};
+            Check(GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE,
+                "read maximized overlay monitor");
+            RECT overlayBounds{};
+            GetWindowRect(OwnOverlay(overlayClass), &overlayBounds);
+            Check(EqualRect(&overlayBounds, &monitor.rcMonitor),
+                "maximized overlay matches visible monitor pixels without an eight-pixel offset");
+        }
         double resumeTotal = 0;
         for (int i = 0; i < 10; ++i)
         {
-            SendMessageW(control, WM_HOTKEY, 1, 0);
+            // Post from a separate producer while the UI keeps pumping and the
+            // renderer is active, so queue stalls cannot hide behind SendMessage.
+            std::jthread producer([control]
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                PostMessageW(control, WM_HOTKEY, 1, 0);
+            });
+            Check(WaitUntil([&] { return !app.IsGrayscaleEnabled(); }), "queued off tap is processed during capture");
             const HWND ownOverlay = OwnOverlay(overlayClass);
             Check(WaitUntil([&] { return !IsWindowVisible(ownOverlay); }), "application hides between tap measurements");
             const auto resume = std::chrono::steady_clock::now();
@@ -304,8 +333,12 @@ namespace
             }), "queued burst settles on the last requested state");
         }
         std::cout << "100 bursts of 21 queued hotkeys settled correctly.\n";
-        std::cout << "Slowest notification-icon update: " << slowestIcon << " ms\n";
-        if (useD3D)
+        Check(WaitUntil([&] { return icon.IsSynchronized(); }), "notification icon converges to the latest state");
+        std::cout << "Slowest notification-icon request: " << slowestIcon << " ms, background Shell call: "
+            << icon.LongestCallMilliseconds() << " ms\n";
+        std::cout << "Longest hotkey queue wait: " << LongestHotkeyQueueWait << " ms\n";
+        Check(LongestHotkeyQueueWait < 100, "active capture must not stall queued shortcuts for 100 ms");
+        if (useD3D && !IsZoomed(target))
         {
             RECT original{};
             GetWindowRect(target, &original);
@@ -328,10 +361,44 @@ namespace
         }
         app.SetStateCallback({});
     }
+
+    void TestMaximizedApplication(HWND target)
+    {
+        MONITORINFO monitor{sizeof(monitor)};
+        Check(GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE,
+            "read large test monitor");
+        const SIZE border = csp::window::ResizeBorderForWindow(target);
+        // Recreate the reported maximized custom-frame geometry on our own
+        // no-activate test window. No user application or desktop setting changes.
+        SetWindowLongPtrW(target, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_MAXIMIZE);
+        SetWindowPos(target, nullptr, monitor.rcMonitor.left - border.cx, monitor.rcMonitor.top - border.cy,
+            monitor.rcMonitor.right - monitor.rcMonitor.left + 2 * border.cx,
+            monitor.rcMonitor.bottom - monitor.rcMonitor.top + 2 * border.cy,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_FRAMECHANGED);
+        RECT raw{};
+        Check(SUCCEEDED(DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &raw, sizeof(raw))),
+            "read maximized test visual bounds");
+        Check(IsZoomed(target) && !csp::d3d::CanCaptureWindow(raw, monitor.rcMonitor, DMDO_DEFAULT),
+            "reproduce maximized bounds rejected by original capture policy");
+        std::cout << "Maximized animated target: (" << raw.left << ',' << raw.top << ")-("
+            << raw.right << ',' << raw.bottom << "), monitor "
+            << monitor.rcMonitor.right - monitor.rcMonitor.left << 'x'
+            << monitor.rcMonitor.bottom - monitor.rcMonitor.top << '\n';
+        Check(SetTimer(target, 2, 17, nullptr) != 0, "animate large test source");
+        TestApplicationToggles(target, true);
+        TestApplicationToggles(target, false);
+        KillTimer(target, 2);
+    }
 }
 int main(int argc, char** argv)
 {
-    if (argc > 1 && std::string(argv[1]) == "--profile")
+    bool profile = false, maximizedOnly = false;
+    for (int i = 1; i < argc; ++i)
+    {
+        profile |= std::string(argv[i]) == "--profile";
+        maximizedOnly |= std::string(argv[i]) == "--maximized";
+    }
+    if (profile)
     {
         csp::util::Logger::Instance().SetLevel(csp::util::Logger::LogLevel::Debug);
         csp::util::Logger::Instance().SetSink([](const std::wstring& line)
@@ -360,14 +427,21 @@ int main(int argc, char** argv)
     try
     {
         Check(target != nullptr, "create test target");
-        TestD3D(target);
-        TestMagnification(target);
-        TestApplicationToggles(target, true);
-        TestApplicationToggles(target, false);
+        if (!maximizedOnly)
+        {
+            TestD3D(target);
+            TestMagnification(target);
+            TestApplicationToggles(target, true);
+            TestApplicationToggles(target, false);
+        }
+        TestMaximizedApplication(target);
     }
     catch (const std::exception& error)
     {
         std::cerr << "FAILED: " << error.what() << '\n';
+        const auto history = csp::util::Logger::Instance().History();
+        const size_t begin = history.size() > 100 ? history.size() - 100 : 0;
+        for (size_t i = begin; i < history.size(); ++i) std::wcerr << history[i];
         result = 1;
     }
     DestroyWindow(target);

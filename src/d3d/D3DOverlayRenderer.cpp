@@ -1,6 +1,7 @@
 #include "d3d/D3DOverlayRenderer.h"
 #include "util/Logger.h"
 #include "d3d/RenderPolicy.h"
+#include "window/WindowGeometry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -882,6 +883,10 @@ namespace csp::d3d
                 return false;
             }
         }
+
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(TargetWnd, MONITOR_DEFAULTTONEAREST), &monitor))
+            TargetRect = window::VisibleCaptureBounds(TargetWnd, TargetRect, monitor.rcMonitor);
 
         const int width = TargetRect.right - TargetRect.left;
         const int height = TargetRect.bottom - TargetRect.top;
