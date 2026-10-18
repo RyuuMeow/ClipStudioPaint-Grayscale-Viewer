@@ -28,7 +28,7 @@ Windows 原生系統匣灰階預覽工具，適用於 Clip Studio Paint 與其�
 
 設定會先驗證，再以原子替換方式寫入 `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`。第一次啟動原生版時，會匯入同資料夾內的舊 `settings.ini`，保留原檔與既有渲染器偏好。啟動後固定常駐系統匣，取代舊設定視窗與啟動時最小化選項。
 
-`Open diagnostics` 會將記憶體內有數量上限的紀錄匯出到設定檔旁，不需要常駐日誌視窗或持續寫入磁碟。
+`Open diagnostics` 會將記憶體內有數量上限的紀錄匯出到設定檔旁；正常離開時也會存成 `diagnostics.log`，包含時間與收到的快捷鍵事件。不需要常駐日誌視窗或持續寫入磁碟。
 
 使用獨立設定檔：
 

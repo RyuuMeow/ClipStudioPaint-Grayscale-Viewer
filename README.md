@@ -28,7 +28,7 @@ New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion
 
 Settings are validated before use and saved by atomic file replacement to `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`. On first native launch, an existing `settings.ini` in that folder is imported without modifying the original. Existing renderer preferences are retained. The old settings window and its start-minimized option are replaced by tray-only startup.
 
-`Open diagnostics` exports the bounded in-memory log beside the settings file. No live log window or continuous log-file writes are needed.
+`Open diagnostics` exports the bounded in-memory log beside the settings file. Normal exit also saves it as `diagnostics.log`, including timestamps and received shortcut events. No live log window or continuous log-file writes are needed.
 
 For an isolated profile:
 

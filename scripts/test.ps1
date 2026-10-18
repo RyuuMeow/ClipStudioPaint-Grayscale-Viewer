@@ -22,12 +22,19 @@ try {
     if ($Smoke) {
         $testProfile = Join-Path (Get-Location) 'build/native/smoke/settings.ini'
         $executable = Join-Path (Get-Location) "build/native/$Configuration/CSP-Grayscale-Viewer.exe"
+        $smokeStarted = [DateTime]::UtcNow
         $child = Start-Process -FilePath $executable -ArgumentList @('--settings', ('"' + $testProfile + '"'), '--smoke-test') -WindowStyle Hidden -PassThru
         if (-not $child.WaitForExit(15000)) {
             $child.Kill()
             throw 'Tray smoke test timed out.'
         }
         if ($child.ExitCode -ne 0) { throw "Tray smoke test failed: $($child.ExitCode)" }
+        $diagnostics = Join-Path (Split-Path -Parent $testProfile) 'diagnostics.log'
+        if (-not (Test-Path -LiteralPath $diagnostics) -or
+            (Get-Item -LiteralPath $diagnostics).LastWriteTimeUtc -lt $smokeStarted -or
+            [IO.File]::ReadAllText($diagnostics) -notmatch '\d{2}:\d{2}:\d{2}\.\d{3} \[INFO\]') {
+            throw 'Tray exit did not preserve timestamped session diagnostics.'
+        }
     }
 } finally {
     Pop-Location

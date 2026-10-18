@@ -1,11 +1,13 @@
 #include "d3d/D3DOverlayRenderer.h"
 #include "magnification/MagnifierOverlay.h"
 #include "util/Logger.h"
+#include "core/Application.h"
 #include <Windows.h>
 #include <dwmapi.h>
 #include <iostream>
 #include <stdexcept>
 #include <chrono>
+#include <shellapi.h>
 
 namespace
 {
@@ -184,6 +186,96 @@ namespace
         renderer.Shutdown();
         std::cout << "Magnification: 20 hide/show cycles, stale timers and restart passed.\n";
     }
+    void TestApplicationToggles(HWND target)
+    {
+        // Exercise the real hotkey-to-application path using only this test's windows.
+        wchar_t executable[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, executable, _countof(executable));
+        csp::core::Settings settings;
+        settings.TargetApps = {std::filesystem::path(executable).filename().wstring()};
+        settings.ToggleHotkey = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F24};
+        settings.UseD3D = true;
+        // Keep real desktop focus untouched; only this application's foreground lookup
+        // sees the test-owned target. OS keyboard delivery is a separate manual check.
+        csp::core::Application app([target] { return target; });
+        Check(app.Initialize(settings) && app.IsHotkeyRegistered(), "application test shortcut registered");
+        HWND control = nullptr;
+        while ((control = FindWindowExW(HWND_MESSAGE, control, L"CSP_GrayscaleControl", nullptr)))
+        {
+            DWORD process = 0;
+            GetWindowThreadProcessId(control, &process);
+            if (process == GetCurrentProcessId()) break;
+        }
+        Check(control != nullptr, "find own application control window");
+        struct TestIcon
+        {
+            NOTIFYICONDATAW Data{};
+            ~TestIcon() { Shell_NotifyIconW(NIM_DELETE, &Data); }
+        } icon;
+        icon.Data.cbSize = sizeof(icon.Data);
+        icon.Data.hWnd = control;
+        icon.Data.uID = 37;
+        icon.Data.uFlags = NIF_ICON | NIF_TIP;
+        icon.Data.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        wcscpy_s(icon.Data.szTip, L"CSP toggle integration test");
+        Check(Shell_NotifyIconW(NIM_ADD, &icon.Data) != FALSE, "create own test notification icon");
+        double slowestIcon = 0;
+        app.SetStateCallback([&](bool, bool)
+        {
+            icon.Data.uFlags = NIF_TIP | NIF_SHOWTIP;
+            wcsncpy_s(icon.Data.szTip, app.StatusText().c_str(), _TRUNCATE);
+            const auto start = std::chrono::steady_clock::now();
+            Shell_NotifyIconW(NIM_MODIFY, &icon.Data);
+            slowestIcon = (std::max)(slowestIcon, std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - start).count());
+        });
+        const auto start = std::chrono::steady_clock::now();
+        double slowest = 0;
+        for (int i = 0; i < 101; ++i)
+        {
+            const auto keyStart = std::chrono::steady_clock::now();
+            SendMessageW(control, WM_HOTKEY, 1, 0);
+            const auto ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - keyStart).count();
+            slowest = (std::max)(slowest, ms);
+            Check(app.IsGrayscaleEnabled() == (i % 2 == 0), "every hotkey changes requested state");
+            PumpFor(1);
+        }
+        std::cout << "101 application toggles: " << std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - start).count() << " ms, slowest handler: " << slowest << " ms\n";
+        Check(WaitUntil([&] { return app.StatusText() == L"Active - Direct3D"; }),
+            "rapid toggles settle on the last requested D3D state");
+        double resumeTotal = 0;
+        for (int i = 0; i < 10; ++i)
+        {
+            SendMessageW(control, WM_HOTKEY, 1, 0);
+            const HWND ownOverlay = OwnOverlay(L"CSP_D3DOverlay");
+            Check(WaitUntil([&] { return !IsWindowVisible(ownOverlay); }), "application hides between tap measurements");
+            const auto resume = std::chrono::steady_clock::now();
+            SendMessageW(control, WM_HOTKEY, 1, 0);
+            Check(WaitUntil([&] { return app.StatusText() == L"Active - Direct3D"; }), "each tap becomes visible");
+            resumeTotal += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - resume).count();
+        }
+        std::cout << "10 short-pause toggles, mean activation: " << resumeTotal / 10 << " ms\n";
+        SendMessageW(control, WM_HOTKEY, 1, 0);
+        Check(!app.IsGrayscaleEnabled(), "final hotkey turns preview off");
+        const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
+        Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "rapid toggles settle off");
+        for (int batch = 0; batch < 100; ++batch)
+        {
+            for (int i = 0; i < 21; ++i)
+                Check(PostMessageW(control, WM_HOTKEY, 1, 0) != FALSE, "queue own hotkey burst");
+            const bool expectedOn = batch % 2 == 0;
+            Check(WaitUntil([&]
+            {
+                return app.IsGrayscaleEnabled() == expectedOn &&
+                    (expectedOn ? app.StatusText() == L"Active - Direct3D" : !IsWindowVisible(overlay));
+            }), "queued burst settles on the last requested state");
+        }
+        std::cout << "100 bursts of 21 queued hotkeys settled correctly.\n";
+        std::cout << "Slowest notification-icon update: " << slowestIcon << " ms\n";
+        app.SetStateCallback({});
+    }
 }
 int main(int argc, char** argv)
 {
@@ -192,6 +284,7 @@ int main(int argc, char** argv)
         csp::util::Logger::Instance().SetLevel(csp::util::Logger::LogLevel::Debug);
         csp::util::Logger::Instance().SetSink([](const std::wstring& line)
         {
+            if (line.find(L"[INFO]") != std::wstring::npos) return;
             const int size = WideCharToMultiByte(CP_UTF8, 0, line.data(), static_cast<int>(line.size()),
                 nullptr, 0, nullptr, nullptr);
             std::string utf8(size, '\0');
@@ -217,6 +310,7 @@ int main(int argc, char** argv)
         Check(target != nullptr, "create test target");
         TestD3D(target);
         TestMagnification(target);
+        TestApplicationToggles(target);
     }
     catch (const std::exception& error)
     {

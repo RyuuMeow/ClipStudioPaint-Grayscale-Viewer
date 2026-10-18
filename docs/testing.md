@@ -35,7 +35,7 @@ For meaningful latency/performance comparisons, use the same machine, window siz
 
 ## Architecture
 
-- `tray/TrayApplication`: hidden broadcast window, notification icon, menu, startup registration and on-demand diagnostics. `SettingsDialogs` contains the two native dialogs.
+- `tray/TrayApplication`: hidden broadcast window, notification icon, menu, startup registration and bounded diagnostics saved on request or normal exit. `SettingsDialogs` contains the two native dialogs.
 - `core/Settings`: validated UTF-8 persistence and legacy import. Parsing has no UI callbacks and cannot overwrite another setting during initialization.
 - `core/Application`: UI-thread state, native shortcut window, coalesced focus events, renderer choice and failure fallback. Inactive renderers are initialized only when needed.
 - `d3d/D3DOverlayRenderer`: worker-owned HWND, D3D immediate context and COM resources. Atomic commands wake a waitable event; a one-shot timer paces active capture. Visibility/target revisions invalidate obsolete work. An inactive worker blocks without periodic ticks, releases image buffers after five seconds, and retains its device/shaders for fast resume.
@@ -61,6 +61,12 @@ Final validation passed the core suite, renderer integration tests and tray star
 ### Embedded icons
 
 The supplied SVG pack and unchanged PNG exports live in `resources/icons`. The full tile is embedded in the executable and used by settings dialogs and the installer; the transparent symbol is the notification icon. Multi-size ICO files are generated with `scripts/build-icons.ps1`, with no added runtime image library. See [icon sources](../resources/icons/README.md).
+
+### Rapid physical shortcut investigation
+
+A user reports that rapid physical F9 presses sometimes appear to do nothing, and pressing again after a pause works. This is **not yet reproduced or confirmed fixed**. The application integration test dispatches 101 individual hotkey messages, measures ten short-pause activations, then posts 100 bursts of 21 messages and checks each burst's final requested and rendered states. It includes real updates to a temporary test-owned notification icon. A foreground provider points only this Application instance at the test window; desktop focus is unchanged and no global keyboard events are injected. These checks cover routing after Windows delivers `WM_HOTKEY`, not delivery from the physical keyboard. In one local Release run, the slowest handler was 3.4 ms, the slowest notification-icon update was 4.6 ms, and mean activation after a brief pause was 28.8 ms.
+
+Diagnostics now record millisecond local timestamps, a sequence number for every received shortcut, registration changes, and preview states. The production message loop also records hotkeys that waited at least 50 ms in its queue. The last 1,000 lines are kept in memory and saved beside the active settings file as `diagnostics.log` on normal exit or `Open diagnostics`. The smoke check verifies automatic timestamped export on exit. To investigate an actual missed press, reproduce with the new build and use tray `Exit` promptly (or `Open diagnostics` while running), then compare `Shortcut received`, registration and `State` lines. No per-key disk writes or general keyboard monitoring are used.
 
 ## Manual release checks
 

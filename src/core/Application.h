@@ -12,7 +12,8 @@ namespace csp::core
     class Application
     {
     public:
-        Application() = default;
+        explicit Application(std::function<HWND()> ReadForeground = GetForegroundWindow)
+            : ReadForeground(std::move(ReadForeground)) {}
         ~Application();
         Application(const Application&) = delete;
         Application& operator=(const Application&) = delete;
@@ -50,6 +51,7 @@ namespace csp::core
         d3d::D3DOverlayRenderer D3DOverlay;
         window::FocusTracker FocusTracker;
         input::HotkeyManager HotkeyManager;
+        std::function<HWND()> ReadForeground;
         HWND ControlWindow = nullptr;
         HWND FocusedTarget = nullptr;
         Backend CurrentBackend = Backend::None;
@@ -68,6 +70,7 @@ namespace csp::core
         std::wstring FallbackReason;
         int RefreshRate = 60;
         int HotkeyId = 1;
+        uint64_t HotkeyEvents = 0;
         input::Hotkey ToggleKey;
         StateCallback StateChangeCallback;
     };

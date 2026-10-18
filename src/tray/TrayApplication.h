@@ -18,6 +18,7 @@ namespace csp::tray
         bool Save();
         bool SetAutoStart(bool Enabled);
         void OpenDiagnostics();
+        bool SaveDiagnostics();
         void ShowError(const std::wstring& Message);
         core::Application App;
         core::Settings Config;
@@ -30,5 +31,6 @@ namespace csp::tray
         bool IconAdded = false;
         bool MenuOpen = false;
         bool DialogOpen = false;
+        bool SessionStarted = false;
     };
 }

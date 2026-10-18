@@ -54,6 +54,11 @@ namespace csp::core
         BOOL result;
         while ((result = GetMessageW(&msg, nullptr, 0, 0)) > 0)
         {
+            if (msg.message == WM_HOTKEY)
+            {
+                const DWORD delay = GetTickCount() - msg.time;
+                if (delay >= 50) LOG_WARNING(L"Shortcut waited %u ms in the message queue", delay);
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -61,7 +66,12 @@ namespace csp::core
     }
 
     void Application::Quit() { PostQuitMessage(0); }
-    void Application::HandleNativeHotkey(int id) { HotkeyManager.HandleHotkey(id); }
+    void Application::HandleNativeHotkey(int id)
+    {
+        LOG_INFO(L"Shortcut received #%llu: id=%d, registered=%s", ++HotkeyEvents, id,
+            HotkeyRegistered ? L"yes" : L"no");
+        HotkeyManager.HandleHotkey(id);
+    }
     void Application::ToggleGrayscale()
     {
         Enabled = !Enabled;
@@ -131,7 +141,7 @@ namespace csp::core
     }
     void Application::ReevaluateFocus()
     {
-        HWND foreground = GetForegroundWindow();
+        HWND foreground = ReadForeground();
         HWND target = nullptr;
         if (!Suspended && foreground && window::WindowFinder::IsTargetWindow(foreground))
         {

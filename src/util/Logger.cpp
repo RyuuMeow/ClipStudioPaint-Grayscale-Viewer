@@ -79,7 +79,10 @@ namespace csp::util
         }
 
         wchar_t line[1100];
-        _snwprintf_s(line, _countof(line), _TRUNCATE, L"%s %s\n", Prefix, buf);
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        _snwprintf_s(line, _countof(line), _TRUNCATE, L"%02u:%02u:%02u.%03u %s %s\n",
+            time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, Prefix, buf);
 
         LogSink sink;
         {

@@ -28,7 +28,7 @@ Windows 原生托盘灰度预览工具，适用于 Clip Studio Paint 和其他�
 
 配置先验证，再通过原子替换保存到 `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`。首次启动原生版会导入同目录的旧 `settings.ini`，保留原文件及原渲染器偏好。程序启动后直接驻留托盘，取代旧设置窗口和启动时最小化选项。
 
-`Open diagnostics` 按需将有数量上限的内存日志导出到配置文件旁，不需要常驻日志窗口或持续写入磁盘。
+`Open diagnostics` 将有数量上限的内存日志导出到配置文件旁；正常退出时也会保存为 `diagnostics.log`，包含时间与收到的快捷键事件。不需要常驻日志窗口或持续写入磁盘。
 
 ```powershell
 .\CSP-Grayscale-Viewer.exe --settings .\test-settings.ini --configure

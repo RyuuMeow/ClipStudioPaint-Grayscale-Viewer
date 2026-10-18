@@ -42,6 +42,8 @@ namespace csp::tray
     TrayApplication::~TrayApplication()
     {
         App.SetStateCallback({});
+        if (SessionStarted && !SaveDiagnostics())
+            LOG_WARNING(L"Cannot save session diagnostics on exit");
         if (IconAdded) Shell_NotifyIconW(NIM_DELETE, &IconData);
         if (Window) DestroyWindow(Window);
         if (Icon) DestroyIcon(Icon);
@@ -105,6 +107,7 @@ namespace csp::tray
             }
         }
         if (!App.Initialize(Config)) { ShowError(L"Cannot initialize window tracking. See diagnostics or retry."); return 1; }
+        SessionStarted = true;
         App.SetStateCallback([this](bool, bool) { UpdateIcon(); });
         if (!AddIcon()) SetTimer(Window, kIconRetry, 2000, nullptr);
         if (smokeTest) SetTimer(Window, kSmokeExit, 1500, nullptr);
@@ -252,19 +255,24 @@ namespace csp::tray
         ShowError(L"Cannot update Windows startup settings (error " + std::to_wstring(status) + L").");
         return false;
     }
-    void TrayApplication::OpenDiagnostics()
+    bool TrayApplication::SaveDiagnostics()
     {
         const auto path = ConfigPath.parent_path() / L"diagnostics.log";
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
-        if (ec) { ShowError(L"Cannot create diagnostics directory."); return; }
+        if (ec) return false;
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         const unsigned char bom[]{0xff, 0xfe};
         out.write(reinterpret_cast<const char*>(bom), sizeof(bom));
         for (const auto& line : util::Logger::Instance().History())
             out.write(reinterpret_cast<const char*>(line.data()), static_cast<std::streamsize>(line.size() * sizeof(wchar_t)));
         out.close();
-        if (!out) { ShowError(L"Cannot write diagnostics."); return; }
+        return static_cast<bool>(out);
+    }
+    void TrayApplication::OpenDiagnostics()
+    {
+        if (!SaveDiagnostics()) { ShowError(L"Cannot write diagnostics."); return; }
+        const auto path = ConfigPath.parent_path() / L"diagnostics.log";
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(Window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
             ShowError(L"Cannot open diagnostics. File: " + path.wstring());
     }
