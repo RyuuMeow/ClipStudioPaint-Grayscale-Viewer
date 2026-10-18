@@ -19,6 +19,8 @@ Windows 原生系統匣灰階預覽工具，適用於 Clip Studio Paint 與其�
 
 **Magnification** 保留為可手動選擇的相容模式。當 Direct3D 擷取失敗、視窗跨螢幕或螢幕旋轉時，會自動切換至相容模式；重新切回目標程式時可重試暫時性的 D3D 失敗。選單狀態會顯示目前模式。
 
+Magnification 的初始化、擷取與閒置清理也由獨立執行緒處理，避免拖住快捷鍵。快速切換會取消過期的預覽請求；透明暖機結束後才顯示為啟用狀態。
+
 - **Automatic** 依目標螢幕更新率設定上限；手動設定也不會超過螢幕更新率。
 - Direct3D 上限為 144 fps；Magnification 受 Windows 計時器限制，上限為 100 fps。這些是上限，不代表保證達成的幀率。
 - Direct3D 的[排除自身擷取功能](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)需要 Windows 10 2004 以上，較舊版本改用相容模式。

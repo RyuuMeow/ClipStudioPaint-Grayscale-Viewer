@@ -19,6 +19,8 @@ Clip Studio Paint などの描画アプリで明暗を確認するための、Wi
 
 **Magnification** は手動選択できる互換モードとして残しています。Direct3D のキャプチャ失敗、画面をまたぐウィンドウ、回転したディスプレイでは自動的に互換モードへ切り替えます。対象アプリに再度切り替えると一時的な D3D 障害を再試行できます。現在のモードはメニューに表示されます。
 
+Magnification の初期化、キャプチャ、待機時のリソース解放も専用スレッドで行い、ショートカット処理を妨げません。素早い切り替えでは古い表示要求を取り消し、透明状態での準備が完了してから有効と表示します。
+
 - **Automatic** は対象ディスプレイのリフレッシュレートに追従します。手動指定もそのレートを上限とします。
 - Direct3D は最大 144 fps、Magnification は Windows タイマーの制約で最大 100 fps です。指定値は達成を保証するものではありません。
 - Direct3D の[自身をキャプチャから除外する機能](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)には Windows 10 2004 以降が必要です。旧版では互換モードを使用します。

@@ -11,7 +11,7 @@ add_library(csp_core STATIC
     src/core/Application.cpp src/core/Settings.cpp
     src/d3d/D3DOverlayRenderer.cpp
     src/input/HotkeyManager.cpp src/input/Hotkey.cpp
-    src/magnification/MagnifierOverlay.cpp
+    src/magnification/MagnifierOverlay.cpp src/magnification/MagnifierWorker.cpp
     src/util/Logger.cpp src/window/FocusTracker.cpp src/window/WindowFinder.cpp
 )
 target_include_directories(csp_core PUBLIC src)

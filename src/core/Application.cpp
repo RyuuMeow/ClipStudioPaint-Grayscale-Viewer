@@ -199,25 +199,38 @@ namespace csp::core
         }
         KillTimer(ControlWindow, kReleaseIdle);
         RECT rect{};
-        if (FAILED(DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect))) &&
-            !GetWindowRect(target, &rect)) return;
+        const HRESULT boundsResult = DwmGetWindowAttribute(target, DWMWA_EXTENDED_FRAME_BOUNDS, &rect, sizeof(rect));
+        if (FAILED(boundsResult) && !GetWindowRect(target, &rect)) return;
         MONITORINFOEXW info{};
         info.cbSize = sizeof(info);
         DEVMODEW mode{};
         mode.dmSize = sizeof(mode);
         const HMONITOR monitor = MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST);
-        const bool monitorKnown = GetMonitorInfoW(monitor, &info) &&
-            EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode);
+        const bool monitorInfoKnown = GetMonitorInfoW(monitor, &info) != FALSE;
+        const bool modeKnown = monitorInfoKnown && EnumDisplaySettingsW(info.szDevice, ENUM_CURRENT_SETTINGS, &mode);
+        const bool monitorKnown = monitorInfoKnown && modeKnown;
         const int monitorRate = monitorKnown ? static_cast<int>(mode.dmDisplayFrequency) : 60;
         bool useD3D = PreferD3D && !D3DFailed && monitorKnown &&
             d3d::CanCaptureWindow(rect, info.rcMonitor, mode.dmDisplayOrientation);
         FallbackReason = !PreferD3D ? L"" : D3DFailed ? L"capture unavailable" :
-            !useD3D ? L"multiple screens or rotated display" : L"";
+            !monitorKnown ? L"display information unavailable" :
+            mode.dmDisplayOrientation != DMDO_DEFAULT ? L"rotated display" :
+            !useD3D ? L"window extends beyond one display" : L"";
         Backend desired = useD3D ? Backend::Direct3D : Backend::Magnification;
+        if (CurrentBackend != desired && !FallbackReason.empty())
+        {
+            LOG_INFO(L"Magnification fallback: %s; target=(%ld,%ld)-(%ld,%ld), monitor=(%ld,%ld)-(%ld,%ld), orientation=%u",
+                FallbackReason.c_str(), rect.left, rect.top, rect.right, rect.bottom,
+                info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right, info.rcMonitor.bottom,
+                mode.dmDisplayOrientation);
+            LOG_INFO(L"Fallback geometry: bounds=%s, maximized=%d, monitorInfo=%d, displayMode=%d, device=%s, modeFields=0x%08X",
+                SUCCEEDED(boundsResult) ? L"DWM" : L"GetWindowRect", IsZoomed(target), monitorInfoKnown,
+                modeKnown, info.szDevice, mode.dmFields);
+        }
         if (CurrentBackend != desired) HideOverlays();
         if (useD3D)
         {
-            MagOverlay.Shutdown();
+            MagOverlay.ReleaseResources();
             D3DOverlay.SetRefreshRate(d3d::EffectiveRefreshRate(RefreshRate, monitorRate, false));
             if (D3DOverlay.Initialize())
             {
@@ -304,7 +317,7 @@ namespace csp::core
             if (msg == WM_TIMER && wp == kReleaseIdle)
             {
                 KillTimer(hwnd, kReleaseIdle);
-                if (self->CurrentBackend == Backend::None) self->MagOverlay.Shutdown();
+                if (self->CurrentBackend == Backend::None) self->MagOverlay.ReleaseResources();
                 return 0;
             }
         }

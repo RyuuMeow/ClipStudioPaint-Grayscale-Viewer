@@ -19,6 +19,8 @@ Windows 原生托盘灰度预览工具，适用于 Clip Studio Paint 和其他�
 
 **Magnification** 保留为可手动选择的兼容模式。Direct3D 捕获失败、窗口跨屏或显示器旋转时自动回退；重新切回目标应用时可重试暂时性的 D3D 故障。菜单状态显示当前模式。
 
+Magnification 的初始化、捕获和空闲清理由独立线程处理，避免阻塞快捷键。快速切换会取消过期的预览请求；透明预热结束后才显示为启用状态。
+
 - **Automatic** 跟随目标显示器刷新率，手动设置也会限制在显示器刷新率以内。
 - Direct3D 上限 144 fps；Magnification 受 Windows 定时器限制，上限 100 fps。这些是上限，并非保证达到的帧率。
 - Direct3D 的[覆盖层捕获排除功能](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)需要 Windows 10 2004 以上，旧版本使用兼容模式。

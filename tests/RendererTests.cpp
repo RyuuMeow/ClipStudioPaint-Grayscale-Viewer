@@ -163,30 +163,57 @@ namespace
         renderer.Attach(target);
         renderer.SetRefreshRate(60);
         renderer.Show();
+        Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "Magnification first-frame timeout");
         HWND overlay = OwnOverlay(L"CSP_GrayscaleOverlay");
         Check(overlay && renderer.IsVisible() && IsWindowVisible(overlay), "Magnification first show");
+        Check(GetWindowThreadProcessId(overlay, nullptr) != GetCurrentThreadId(),
+            "Magnification windows and capture run outside the hotkey thread");
+        Check(Opacity(overlay) == 255, "Magnification reports active only after warm-up");
         for (int i = 0; i < 20; ++i)
         {
             renderer.Hide();
             // Reproduce a WM_TIMER already queued before KillTimer.
-            SendMessageW(overlay, WM_TIMER, 1, 0);
+            PostMessageW(overlay, WM_TIMER, 1, 0);
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "Magnification hide completes");
             PumpFor(20);
             Check(!IsWindowVisible(overlay) && !renderer.IsVisible(), "stale Mag timer cannot reshow hidden overlay");
             renderer.Show();
-            PumpFor(50);
+            Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "Magnification resume timeout");
             Check(renderer.IsVisible() && IsWindowVisible(overlay) && !renderer.HasFailed(), "Mag resumes at unchanged bounds");
         }
+        for (int i = 0; i < 8; ++i)
+        {
+            renderer.Hide();
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "Mag hides before warm-up cancellation");
+            renderer.Show();
+            Check(WaitUntil([&] { return IsWindowVisible(overlay) && Opacity(overlay) == 1; }), "Mag warm-up stays transparent");
+            Check(!renderer.IsVisible(), "Mag warm-up is not reported as active");
+            renderer.Hide();
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "Mag warm-up cancelled");
+            PumpFor(70);
+            Check(!IsWindowVisible(overlay) && !renderer.IsVisible(), "Mag cancelled warm-up stays hidden");
+        }
+        const auto releaseStart = std::chrono::steady_clock::now();
+        renderer.ReleaseResources();
+        Check(std::chrono::steady_clock::now() - releaseStart < std::chrono::milliseconds(100),
+            "Mag resource release does not wait on capture");
+        Check(WaitUntil([&] { return !renderer.HasResources() && !IsWindow(overlay); }), "Mag asynchronously releases idle resources");
+        renderer.Show();
+        Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "Mag resumes after resource release");
+        overlay = OwnOverlay(L"CSP_GrayscaleOverlay");
+        Check(renderer.IsVisible() && !renderer.HasFailed() && overlay, "Mag recreated resources remain healthy");
         renderer.Shutdown();
         Check(!IsWindow(overlay), "Magnification shutdown destroys overlay");
         Check(renderer.Initialize(), "Magnification reinitialization");
         renderer.Attach(target);
         renderer.Show();
+        Check(WaitUntil([&] { return renderer.IsVisible() || renderer.HasFailed(); }), "Magnification restart timeout");
         overlay = OwnOverlay(L"CSP_GrayscaleOverlay");
         Check(renderer.IsVisible() && IsWindowVisible(overlay), "Magnification restart at unchanged bounds");
         renderer.Shutdown();
-        std::cout << "Magnification: 20 hide/show cycles, stale timers and restart passed.\n";
+        std::cout << "Magnification: worker ownership, 20 hide/show cycles, 8 warm-up cancellations, stale timers, asynchronous release and restart passed.\n";
     }
-    void TestApplicationToggles(HWND target)
+    void TestApplicationToggles(HWND target, bool useD3D)
     {
         // Exercise the real hotkey-to-application path using only this test's windows.
         wchar_t executable[MAX_PATH]{};
@@ -194,7 +221,10 @@ namespace
         csp::core::Settings settings;
         settings.TargetApps = {std::filesystem::path(executable).filename().wstring()};
         settings.ToggleHotkey = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F24};
-        settings.UseD3D = true;
+        settings.UseD3D = useD3D;
+        const wchar_t* activeStatus = useD3D ? L"Active - Direct3D" : L"Active - Magnification";
+        const wchar_t* overlayClass = useD3D ? L"CSP_D3DOverlay" : L"CSP_GrayscaleOverlay";
+        std::cout << "Application toggle backend: " << (useD3D ? "Direct3D" : "Magnification") << '\n';
         // Keep real desktop focus untouched; only this application's foreground lookup
         // sees the test-owned target. OS keyboard delivery is a separate manual check.
         csp::core::Application app([target] { return target; });
@@ -243,23 +273,24 @@ namespace
         }
         std::cout << "101 application toggles: " << std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count() << " ms, slowest handler: " << slowest << " ms\n";
-        Check(WaitUntil([&] { return app.StatusText() == L"Active - Direct3D"; }),
-            "rapid toggles settle on the last requested D3D state");
+        Check(slowest < 100, "renderer startup/capture must not block the shortcut handler for 100 ms");
+        Check(WaitUntil([&] { return app.StatusText() == activeStatus; }),
+            "rapid toggles settle on the last requested renderer state");
         double resumeTotal = 0;
         for (int i = 0; i < 10; ++i)
         {
             SendMessageW(control, WM_HOTKEY, 1, 0);
-            const HWND ownOverlay = OwnOverlay(L"CSP_D3DOverlay");
+            const HWND ownOverlay = OwnOverlay(overlayClass);
             Check(WaitUntil([&] { return !IsWindowVisible(ownOverlay); }), "application hides between tap measurements");
             const auto resume = std::chrono::steady_clock::now();
             SendMessageW(control, WM_HOTKEY, 1, 0);
-            Check(WaitUntil([&] { return app.StatusText() == L"Active - Direct3D"; }), "each tap becomes visible");
+            Check(WaitUntil([&] { return app.StatusText() == activeStatus; }), "each tap becomes visible");
             resumeTotal += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - resume).count();
         }
         std::cout << "10 short-pause toggles, mean activation: " << resumeTotal / 10 << " ms\n";
         SendMessageW(control, WM_HOTKEY, 1, 0);
         Check(!app.IsGrayscaleEnabled(), "final hotkey turns preview off");
-        const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
+        const HWND overlay = OwnOverlay(overlayClass);
         Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "rapid toggles settle off");
         for (int batch = 0; batch < 100; ++batch)
         {
@@ -269,11 +300,32 @@ namespace
             Check(WaitUntil([&]
             {
                 return app.IsGrayscaleEnabled() == expectedOn &&
-                    (expectedOn ? app.StatusText() == L"Active - Direct3D" : !IsWindowVisible(overlay));
+                    (expectedOn ? app.StatusText() == activeStatus : !IsWindowVisible(overlay));
             }), "queued burst settles on the last requested state");
         }
         std::cout << "100 bursts of 21 queued hotkeys settled correctly.\n";
         std::cout << "Slowest notification-icon update: " << slowestIcon << " ms\n";
+        if (useD3D)
+        {
+            RECT original{};
+            GetWindowRect(target, &original);
+            MONITORINFO monitor{sizeof(monitor)};
+            Check(GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE,
+                "read test target monitor");
+            SetWindowPos(target, nullptr, monitor.rcMonitor.left - 10, monitor.rcMonitor.top + 100,
+                350, 240, SWP_NOACTIVATE | SWP_NOZORDER);
+            SendMessageW(control, WM_HOTKEY, 1, 0);
+            Check(WaitUntil([&] { return app.StatusText() == L"Compatibility - window extends beyond one display"; }),
+                "automatic geometry fallback reaches active Magnification");
+            SetWindowPos(target, nullptr, original.left, original.top, original.right - original.left,
+                original.bottom - original.top, SWP_NOACTIVATE | SWP_NOZORDER);
+            app.ReevaluateFocus();
+            Check(WaitUntil([&] { return app.StatusText() == activeStatus; }), "fallback returns to D3D");
+            Check(WaitUntil([&] { return OwnOverlay(L"CSP_GrayscaleOverlay") == nullptr; }),
+                "returning to D3D releases Magnification windows asynchronously");
+            SendMessageW(control, WM_HOTKEY, 1, 0);
+            std::cout << "Automatic Magnification fallback and return to D3D passed.\n";
+        }
         app.SetStateCallback({});
     }
 }
@@ -310,7 +362,8 @@ int main(int argc, char** argv)
         Check(target != nullptr, "create test target");
         TestD3D(target);
         TestMagnification(target);
-        TestApplicationToggles(target);
+        TestApplicationToggles(target, true);
+        TestApplicationToggles(target, false);
     }
     catch (const std::exception& error)
     {

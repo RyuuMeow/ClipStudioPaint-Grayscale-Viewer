@@ -19,6 +19,8 @@ New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion
 
 **Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it when capture fails, the target spans monitors, or the display is rotated. Switching back to the target retries a transient D3D failure. The tray status identifies the active mode.
 
+Magnification also runs on its own worker, including initialization and idle cleanup, so capture work does not hold up shortcut processing. Rapid changes cancel obsolete preview requests; the status becomes active after the transparent warm-up finishes.
+
 - **Automatic** follows the target monitor's refresh rate. Explicit limits are also capped to the monitor rate.
 - Direct3D is capped at 144 fps; Magnification is capped at 100 fps by its Windows timer. These are limits, not guaranteed achieved rates.
 - Direct3D requires Windows 10 version 2004 or later for [overlay exclusion from capture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity). Earlier versions use compatibility mode.
