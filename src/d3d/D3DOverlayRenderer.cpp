@@ -711,8 +711,10 @@ namespace csp::d3d
         if (desktopResource)
         {
             AccessLossCount = 0;
-            // Hardware cursor-only updates do not require another grayscale draw.
-            if (frameInfo.LastPresentTime.QuadPart == 0 && !CaptureInvalid && HasCapturedFrame)
+            // A new duplication session can first return only a pointer update,
+            // with no initialized desktop image. Never copy it, even when the
+            // crop is invalid or we have not captured our first frame yet.
+            if (frameInfo.LastPresentTime.QuadPart == 0)
             {
                 Duplication->ReleaseFrame();
                 if (!PresentationPending) return false;
@@ -815,55 +817,28 @@ namespace csp::d3d
     {
         // A successful Present is a queued frame, not a completed composition.
         // Synchronize only this reveal; normal drawing keeps its nonblocking path.
+        // DXGI present counters are not reliable across multiple monitors. DwmFlush
+        // waits for this application's queued DirectX updates to reach the screen.
         const auto start = std::chrono::steady_clock::now();
-        const auto deadline = start + std::chrono::milliseconds(250);
-        UINT submitted = 0;
-        HRESULT hr = SwapChain->GetLastPresentCount(&submitted);
-        if (SUCCEEDED(hr)) hr = CompositionDevice->WaitForCommitCompletion();
-        while (SUCCEEDED(hr))
+        HRESULT hr = CompositionDevice->WaitForCommitCompletion();
+        if (SUCCEEDED(hr)) hr = DwmFlush();
+        if (!RefreshLoopRunning.load() || !Visible.load() || Revision.load() != FrameRevision)
         {
-            if (!RefreshLoopRunning.load() || !Visible.load() || Revision.load() != FrameRevision)
-            {
-                ShowWindow(HostWnd, SW_HIDE);
-                return false;
-            }
-            // Also updates statistics on systems using a hardware flip queue.
-            hr = DwmFlush();
-            if (FAILED(hr)) break;
-            DXGI_FRAME_STATISTICS completed{};
-            hr = SwapChain->GetFrameStatistics(&completed);
-            // The first query can mark the beginning of a statistics sequence.
-            if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) hr = S_FALSE;
-            if (FAILED(hr)) break;
-            if (hr == S_OK && static_cast<INT>(completed.PresentCount - submitted) >= 0)
-            {
-                if (!RefreshLoopRunning.load() || !Visible.load() || Revision.load() != FrameRevision)
-                {
-                    ShowWindow(HostWnd, SW_HIDE);
-                    return false;
-                }
-                if (!SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA))
-                {
-                    hr = HRESULT_FROM_WIN32(GetLastError());
-                    break;
-                }
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - start).count();
-                LOG_DEBUG(L"First frame ready: submitted=%u composed=%u wait=%lld ms",
-                    submitted, completed.PresentCount, elapsed);
-                return true;
-            }
-            if (std::chrono::steady_clock::now() >= deadline)
-            {
-                hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
-                break;
-            }
-            // Yield if DWM returned immediately; visibility commands can cancel.
-            WaitForSingleObject(WakeEvent, 1);
+            ShowWindow(HostWnd, SW_HIDE);
+            return false;
         }
-        LOG_WARNING(L"Cannot confirm first D3D composition (hr=0x%08X)", hr);
-        ReportFailure();
-        return false;
+        if (SUCCEEDED(hr) && !SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA))
+            hr = HRESULT_FROM_WIN32(GetLastError());
+        if (FAILED(hr))
+        {
+            LOG_WARNING(L"Cannot complete first D3D composition (hr=0x%08X)", hr);
+            ReportFailure();
+            return false;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        LOG_DEBUG(L"First valid frame flushed: wait=%lld ms", elapsed);
+        return true;
     }
 
     bool D3DOverlayRenderer::UpdateTargetRect(RECT& TargetRect)

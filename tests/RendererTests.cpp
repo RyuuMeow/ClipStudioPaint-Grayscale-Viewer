@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <shellapi.h>
+#include <vector>
 
 namespace
 {
@@ -134,10 +135,10 @@ namespace
             renderer.Hide();
             Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "D3D hides before warm-up cancellation");
             renderer.Show();
-            Check(WaitUntil([&]
-            {
-                return IsWindowVisible(overlay) && Opacity(overlay) == 1;
-            }), "D3D primes the first frame without exposing an opaque blank window");
+            // Cancel at different points around acquisition and composition. A
+            // fast compositor may finish between polls; that is not a failure.
+            const DWORD delays[]{0, 1, 3, 5, 8, 13, 21, 34};
+            if (delays[i]) PumpFor(delays[i]);
             renderer.Hide();
             Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "first-frame wait can be cancelled");
             PumpFor(50);
@@ -389,14 +390,127 @@ namespace
         TestApplicationToggles(target, false);
         KillTimer(target, 2);
     }
+
+    void TestRevealPixels(HWND target)
+    {
+        // Sample one pixel inside this test-owned window only. Disabling capture
+        // exclusion on our own overlay makes its composed output measurable.
+        SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        RECT bounds{};
+        GetWindowRect(target, &bounds);
+        const int x = (bounds.left + bounds.right) / 2;
+        const int y = (bounds.top + bounds.bottom) / 2;
+        std::cout << "Pixel target: (" << bounds.left << ',' << bounds.top << ")-(" << bounds.right << ','
+            << bounds.bottom << "), dpi=" << GetDpiForWindow(target) << '\n';
+        Check(WindowFromPoint(POINT{x, y}) == target, "pixel location belongs to the test window");
+        csp::d3d::D3DOverlayRenderer renderer;
+        Check(renderer.Initialize(), "pixel-test renderer initialization");
+        const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
+        Check(SetWindowDisplayAffinity(overlay, WDA_NONE) != FALSE, "allow observing our test overlay");
+        renderer.Attach(target);
+        HDC screen = GetDC(nullptr);
+        HDC sample = CreateCompatibleDC(screen);
+        HBITMAP pixelBitmap = CreateCompatibleBitmap(screen, 1, 1);
+        const auto previousBitmap = SelectObject(sample, pixelBitmap);
+        unsigned badPixels = 0, grayPixels = 0, samples = 0;
+        COLORREF darkest = RGB(255, 255, 255);
+        for (int cycle = 0; cycle < 24; ++cycle)
+        {
+            renderer.Hide();
+            Check(WaitUntil([&] { return !IsWindowVisible(overlay); }), "pixel-test hide");
+            InvalidateRect(target, nullptr, FALSE);
+            UpdateWindow(target);
+            PumpFor(60);
+            DwmFlush();
+            renderer.Show();
+            const auto previousGray = grayPixels;
+            const auto deadline = GetTickCount64() + 350;
+            do
+            {
+                Check(WindowFromPoint(POINT{x, y}) == target, "sample remains inside the test window");
+                Check(BitBlt(sample, 0, 0, 1, 1, screen, x, y, SRCCOPY | CAPTUREBLT) != FALSE,
+                    "copy composed test pixel");
+                const COLORREF pixel = GetPixel(sample, 0, 0);
+                Check(pixel != CLR_INVALID, "read test pixel");
+                const int r = GetRValue(pixel), g = GetGValue(pixel), b = GetBValue(pixel);
+                const int luminance = (299 * r + 587 * g + 114 * b) / 1000;
+                if (luminance < 102 || luminance > 122)
+                {
+                    if (badPixels < 12) std::cout << "Unexpected pixel: cycle=" << cycle
+                        << " rgb=" << r << ',' << g << ',' << b << " active=" << renderer.IsVisible()
+                        << " opacity=" << static_cast<int>(Opacity(overlay)) << '\n';
+                    ++badPixels;
+                }
+                if (r == g && g == b && r > 100 && r < 123) ++grayPixels;
+                if (r + g + b < GetRValue(darkest) + GetGValue(darkest) + GetBValue(darkest)) darkest = pixel;
+                ++samples;
+                PumpFor(1);
+            } while (GetTickCount64() < deadline && !renderer.HasFailed());
+            Check(!renderer.HasFailed(), "pixel-test remains on D3D");
+            Check(renderer.IsVisible() && grayPixels > previousGray, "every reveal produces visible grayscale pixels");
+        }
+        SelectObject(sample, previousBitmap);
+        DeleteObject(pixelBitmap);
+        DeleteDC(sample);
+        ReleaseDC(nullptr, screen);
+        std::cout << "Reveal pixel samples=" << samples << " unexpected=" << badPixels << " gray=" << grayPixels
+            << " darkest=" << static_cast<int>(GetRValue(darkest)) << ',' << static_cast<int>(GetGValue(darkest))
+            << ',' << static_cast<int>(GetBValue(darkest)) << '\n';
+        Check(grayPixels > 0, "pixel test actually observes grayscale output");
+        Check(badPixels == 0, "reveal must not display a black or corrupted frame");
+    }
+
+    void TestRevealOnDisplays(HWND target)
+    {
+        std::vector<RECT> displays;
+        EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR, HDC, LPRECT rect, LPARAM data) -> BOOL
+        {
+            reinterpret_cast<std::vector<RECT>*>(data)->push_back(*rect);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&displays));
+        Check(!displays.empty(), "enumerate displays for reveal tests");
+        for (const auto& monitor : displays)
+        {
+            std::cout << "Reveal on display: (" << monitor.left << ',' << monitor.top << ")-("
+                << monitor.right << ',' << monitor.bottom << ")\n";
+            HWND displayTarget = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+                L"CSP_RendererTestTarget", L"Renderer pixel test", WS_POPUP,
+                monitor.left + 80, monitor.top + 80, 320, 220, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            Check(displayTarget != nullptr, "create per-display pixel target");
+            ShowWindow(displayTarget, SW_SHOWNOACTIVATE);
+            UpdateWindow(displayTarget);
+            PumpFor(60);
+            DwmFlush();
+            try { TestRevealPixels(displayTarget); }
+            catch (...) { DestroyWindow(displayTarget); throw; }
+            DestroyWindow(displayTarget);
+        }
+        // Also reproduce the full-size maximized geometry from the report.
+        SetWindowPos(target, nullptr, 100, 100, 320, 220, SWP_NOZORDER | SWP_NOACTIVATE);
+        MONITORINFO monitor{sizeof(monitor)};
+        Check(GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE,
+            "read maximized pixel-test monitor");
+        const SIZE border = csp::window::ResizeBorderForWindow(target);
+        SetWindowLongPtrW(target, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_MAXIMIZE);
+        SetWindowPos(target, nullptr, monitor.rcMonitor.left - border.cx, monitor.rcMonitor.top - border.cy,
+            monitor.rcMonitor.right - monitor.rcMonitor.left + 2 * border.cx,
+            monitor.rcMonitor.bottom - monitor.rcMonitor.top + 2 * border.cy,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        UpdateWindow(target);
+        DwmFlush();
+        std::cout << "Reveal on maximized target\n";
+        TestRevealPixels(target);
+    }
 }
 int main(int argc, char** argv)
 {
-    bool profile = false, maximizedOnly = false;
+    bool profile = false, maximizedOnly = false, revealOnly = false;
     for (int i = 1; i < argc; ++i)
     {
         profile |= std::string(argv[i]) == "--profile";
         maximizedOnly |= std::string(argv[i]) == "--maximized";
+        revealOnly |= std::string(argv[i]) == "--reveal";
     }
     if (profile)
     {
@@ -427,14 +541,20 @@ int main(int argc, char** argv)
     try
     {
         Check(target != nullptr, "create test target");
-        if (!maximizedOnly)
+        if (revealOnly) TestRevealOnDisplays(target);
+        else
         {
-            TestD3D(target);
-            TestMagnification(target);
-            TestApplicationToggles(target, true);
-            TestApplicationToggles(target, false);
+            if (!maximizedOnly)
+            {
+                TestD3D(target);
+                TestMagnification(target);
+                TestApplicationToggles(target, true);
+                TestApplicationToggles(target, false);
+            }
+            TestMaximizedApplication(target);
+            SetWindowLongPtrW(target, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+            TestRevealOnDisplays(target);
         }
-        TestMaximizedApplication(target);
     }
     catch (const std::exception& error)
     {
