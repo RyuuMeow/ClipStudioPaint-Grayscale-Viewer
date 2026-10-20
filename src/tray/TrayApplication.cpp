@@ -252,6 +252,13 @@ namespace csp::tray
         std::ofstream out(path, std::ios::binary | std::ios::trunc);
         const unsigned char bom[]{0xff, 0xfe};
         out.write(reinterpret_cast<const char*>(bom), sizeof(bom));
+        // Keep identity outside the bounded history, even after a long session.
+        const std::string build = __DATE__ " " __TIME__;
+        const auto identity = L"Executable: " + ExecutablePath() +
+            L"\r\nBuild: " + std::wstring(build.begin(), build.end()) +
+            L"\r\nSettings: " + ConfigPath.wstring() + L"\r\n";
+        out.write(reinterpret_cast<const char*>(identity.data()),
+            static_cast<std::streamsize>(identity.size() * sizeof(wchar_t)));
         for (const auto& line : util::Logger::Instance().History())
             out.write(reinterpret_cast<const char*>(line.data()), static_cast<std::streamsize>(line.size() * sizeof(wchar_t)));
         out.close();

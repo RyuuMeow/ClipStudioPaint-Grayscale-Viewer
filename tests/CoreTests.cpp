@@ -15,6 +15,17 @@ namespace
     {
         if (!condition) throw std::runtime_error(message);
     }
+    HWND OwnControlWindow()
+    {
+        HWND window = nullptr;
+        while ((window = FindWindowExW(HWND_MESSAGE, window, L"CSP_GrayscaleControl", nullptr)))
+        {
+            DWORD process = 0;
+            GetWindowThreadProcessId(window, &process);
+            if (process == GetCurrentProcessId()) return window;
+        }
+        return nullptr;
+    }
     void SettingsRoundTrip()
     {
         csp::core::Settings original;
@@ -130,7 +141,7 @@ namespace
         settings.ToggleHotkey = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F22};
         csp::core::Application app;
         Check(app.Initialize(settings) && app.IsHotkeyRegistered(), "native shortcut registered");
-        const HWND control = FindWindowExW(HWND_MESSAGE, nullptr, L"CSP_GrayscaleControl", nullptr);
+        const HWND control = OwnControlWindow();
         Check(control != nullptr, "native shortcut has a receiving HWND");
         Check(!app.IsGrayscaleEnabled(), "preview starts disabled");
         SendMessageW(control, WM_HOTKEY, 1, 0);
@@ -230,6 +241,73 @@ namespace
             "register, version, coalesced update, recreation and shutdown stay ordered");
         Check(!icon.IsRegistered(), "shutdown removes the notification icon");
     }
+
+    void FocusRecoveryWithoutNotifications()
+    {
+        struct TestWindow
+        {
+            HWND Handle = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, L"STATIC", L"",
+                WS_POPUP | WS_VISIBLE, -30000, -30000, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+            ~TestWindow() { if (Handle) DestroyWindow(Handle); }
+        } target, blocker;
+        Check(target.Handle && blocker.Handle, "create isolated focus test windows");
+        wchar_t executable[32768]{};
+        GetModuleFileNameW(nullptr, executable, _countof(executable));
+        csp::core::Settings settings;
+        settings.TargetApps = {std::filesystem::path(executable).filename().wstring()};
+        settings.FocusOnly = true;
+        settings.ToggleHotkey = {MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_F21};
+        HWND foreground = nullptr;
+        csp::core::Application app([&] { return foreground; });
+        Check(app.Initialize(settings) && !app.IsHotkeyRegistered(), "no shortcut without target focus");
+        const HWND control = OwnControlWindow();
+        Check(control != nullptr, "find own focus recovery control window");
+        // Dispatch only timers: deliberately withhold foreground/location notifications.
+        // The foreground provider never changes the user's actual desktop focus.
+        const auto waitForRegistration = [&](bool expected, DWORD timeout = 1500)
+        {
+            const auto deadline = GetTickCount64() + timeout;
+            do
+            {
+                MSG message{};
+                while (PeekMessageW(&message, control, WM_TIMER, WM_TIMER, PM_REMOVE))
+                    DispatchMessageW(&message);
+                if (app.IsHotkeyRegistered() == expected) return true;
+                Sleep(5);
+            } while (GetTickCount64() < deadline);
+            return false;
+        };
+        foreground = target.Handle;
+        Check(waitForRegistration(true), "missed focus notification must not leave the shortcut unregistered");
+        foreground = nullptr;
+        Check(waitForRegistration(false), "missed focus loss releases the target-only shortcut");
+        app.ReevaluateFocus(); // An activation transition can temporarily report no foreground.
+        foreground = target.Handle;
+        Check(waitForRegistration(true), "transient null foreground recovers without another notification");
+        ShowWindow(target.Handle, SW_HIDE);
+        Check(waitForRegistration(false), "hidden target releases the shortcut");
+        ShowWindow(target.Handle, SW_SHOWNOACTIVATE);
+        Check(waitForRegistration(true), "same foreground handle becoming visible restores the shortcut");
+        ShowWindow(target.Handle, SW_SHOWMINNOACTIVE);
+        Check(waitForRegistration(false), "minimized target releases the shortcut");
+        ShowWindow(target.Handle, SW_SHOWNOACTIVATE);
+        Check(waitForRegistration(true), "same foreground handle restored from minimization recovers the shortcut");
+        app.SetSuspended(true);
+        Check(!waitForRegistration(true, 350), "focus watchdog must respect suspension");
+        app.SetSuspended(false);
+        Check(app.IsHotkeyRegistered(), "resume restores target-only registration");
+
+        foreground = nullptr;
+        app.ReevaluateFocus();
+        Check(RegisterHotKey(blocker.Handle, 9, settings.ToggleHotkey.Modifiers, settings.ToggleHotkey.Key) != FALSE,
+            "reserve focus test shortcut temporarily");
+        foreground = target.Handle;
+        app.ReevaluateFocus();
+        const bool conflictDetected = !app.IsHotkeyRegistered();
+        UnregisterHotKey(blocker.Handle, 9);
+        Check(conflictDetected, "focus activation records shortcut conflict");
+        Check(waitForRegistration(true), "released shortcut conflict recovers without switching focus again");
+    }
 }
 
 int main()
@@ -243,6 +321,7 @@ int main()
         Hotkeys();
         GeometryAndPacing();
         NativeHotkeyRoutingAndConflict();
+        FocusRecoveryWithoutNotifications();
         SlowNotificationIconDoesNotBlockRequests();
         std::cout << "All core regression tests passed.\n";
         return 0;

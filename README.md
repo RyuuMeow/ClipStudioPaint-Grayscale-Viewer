@@ -15,7 +15,7 @@ Shortcut and target editing use small native dialogs created only when opened. T
 
 ## Rendering
 
-New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion, and presentation run on a dedicated worker. There is no per-frame UI message queue; duplicate timeout and cursor-only frames are skipped. Hidden previews stop rendering and release image buffers after five seconds, while retaining the device and shaders for fast resume. Focus tracking uses Windows events instead of periodic polling.
+New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion, and presentation run on a dedicated worker. There is no per-frame UI message queue; duplicate timeout and cursor-only frames are skipped. Hidden previews stop rendering and release image buffers after five seconds, while retaining the device and shaders for fast resume. Focus tracking uses Windows events with a lightweight 250 ms recovery check; stable target focus does not repeat renderer selection.
 
 **Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it when capture fails, the target spans monitors, or the display is rotated. Switching back to the target retries a transient D3D failure. The tray status identifies the active mode.
 
@@ -32,7 +32,7 @@ Magnification also runs on its own worker, including initialization and idle cle
 
 Settings are validated before use and saved by atomic file replacement to `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`. On first native launch, an existing `settings.ini` in that folder is imported without modifying the original. Existing renderer preferences are retained. The old settings window and its start-minimized option are replaced by tray-only startup.
 
-`Open diagnostics` exports the bounded in-memory log beside the settings file. Normal exit also saves it as `diagnostics.log`, including timestamps and received shortcut events. No live log window or continuous log-file writes are needed.
+`Open diagnostics` exports the bounded in-memory log beside the settings file. Normal exit also saves it as `diagnostics.log`, including the executable path, build time, settings path, timestamps and received shortcut events. No live log window or continuous log-file writes are needed.
 
 For an isolated profile:
 

@@ -243,7 +243,8 @@ namespace
         std::cout << "Application toggle backend: " << (useD3D ? "Direct3D" : "Magnification") << '\n';
         // Keep real desktop focus untouched; only this application's foreground lookup
         // sees the test-owned target. OS keyboard delivery is a separate manual check.
-        csp::core::Application app([target] { return target; });
+        HWND foreground = target;
+        csp::core::Application app([&] { return foreground; });
         Check(app.Initialize(settings) && app.IsHotkeyRegistered(), "application test shortcut registered");
         HWND control = nullptr;
         while ((control = FindWindowExW(HWND_MESSAGE, control, L"CSP_GrayscaleControl", nullptr)))
@@ -360,6 +361,23 @@ namespace
             SendMessageW(control, WM_HOTKEY, 1, 0);
             std::cout << "Automatic Magnification fallback and return to D3D passed.\n";
         }
+        // Reenter the target with no focus notification, including after a
+        // transient null foreground. Verify both registration and visible output.
+        SendMessageW(control, WM_HOTKEY, 1, 0);
+        Check(WaitUntil([&] { return app.StatusText() == activeStatus; }), "focus test starts active");
+        for (int i = 0; i < 3; ++i)
+        {
+            foreground = nullptr;
+            app.ReevaluateFocus();
+            Check(!app.IsHotkeyRegistered(), "transient focus loss unregisters target-only shortcut");
+            Check(WaitUntil([&] { return !IsWindowVisible(OwnOverlay(overlayClass)); }), "focus loss hides preview");
+            foreground = target;
+            Check(WaitUntil([&] { return app.IsHotkeyRegistered() && app.StatusText() == activeStatus; }, 1500),
+                "focus recovery restores shortcut and preview without another event");
+        }
+        std::cout << "Three focus recoveries restored both shortcut and visible preview.\n";
+        SendMessageW(control, WM_HOTKEY, 1, 0);
+        Check(!app.IsGrayscaleEnabled(), "recovered shortcut still toggles off");
         app.SetStateCallback({});
     }
 
@@ -395,15 +413,16 @@ namespace
     {
         // Sample one pixel inside this test-owned window only. Disabling capture
         // exclusion on our own overlay makes its composed output measurable.
-        SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        Check(SetWindowPos(target, HWND_TOPMOST, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE) != FALSE, "bring test target above other windows");
         RECT bounds{};
         GetWindowRect(target, &bounds);
         const int x = (bounds.left + bounds.right) / 2;
         const int y = (bounds.top + bounds.bottom) / 2;
         std::cout << "Pixel target: (" << bounds.left << ',' << bounds.top << ")-(" << bounds.right << ','
             << bounds.bottom << "), dpi=" << GetDpiForWindow(target) << '\n';
-        Check(WindowFromPoint(POINT{x, y}) == target, "pixel location belongs to the test window");
+        Check(WaitUntil([&] { return WindowFromPoint(POINT{x, y}) == target; }, 500),
+            "pixel location belongs to the test window");
         csp::d3d::D3DOverlayRenderer renderer;
         Check(renderer.Initialize(), "pixel-test renderer initialization");
         const HWND overlay = OwnOverlay(L"CSP_D3DOverlay");
@@ -461,7 +480,7 @@ namespace
         Check(badPixels == 0, "reveal must not display a black or corrupted frame");
     }
 
-    void TestRevealOnDisplays(HWND target)
+    void TestRevealOnDisplays(HWND target, bool maximizedOnly = false)
     {
         std::vector<RECT> displays;
         EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR, HDC, LPRECT rect, LPARAM data) -> BOOL
@@ -472,6 +491,7 @@ namespace
         Check(!displays.empty(), "enumerate displays for reveal tests");
         for (const auto& monitor : displays)
         {
+            if (maximizedOnly) break;
             std::cout << "Reveal on display: (" << monitor.left << ',' << monitor.top << ")-("
                 << monitor.right << ',' << monitor.bottom << ")\n";
             HWND displayTarget = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
@@ -486,31 +506,39 @@ namespace
             catch (...) { DestroyWindow(displayTarget); throw; }
             DestroyWindow(displayTarget);
         }
-        // Also reproduce the full-size maximized geometry from the report.
-        SetWindowPos(target, nullptr, 100, 100, 320, 220, SWP_NOZORDER | SWP_NOACTIVATE);
+        // Give the maximized sample its own initially-topmost window too.
+        // Reusing the earlier window can leave it behind other windows even
+        // after SetWindowPos reports success when promoting it to topmost.
         MONITORINFO monitor{sizeof(monitor)};
         Check(GetMonitorInfoW(MonitorFromWindow(target, MONITOR_DEFAULTTONEAREST), &monitor) != FALSE,
             "read maximized pixel-test monitor");
         const SIZE border = csp::window::ResizeBorderForWindow(target);
-        SetWindowLongPtrW(target, GWL_STYLE, WS_POPUP | WS_VISIBLE | WS_MAXIMIZE);
-        SetWindowPos(target, nullptr, monitor.rcMonitor.left - border.cx, monitor.rcMonitor.top - border.cy,
+        HWND maximizedTarget = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+            L"CSP_RendererTestTarget", L"Maximized pixel test", WS_POPUP | WS_VISIBLE | WS_MAXIMIZE,
+            monitor.rcMonitor.left - border.cx, monitor.rcMonitor.top - border.cy,
             monitor.rcMonitor.right - monitor.rcMonitor.left + 2 * border.cx,
             monitor.rcMonitor.bottom - monitor.rcMonitor.top + 2 * border.cy,
-            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-        UpdateWindow(target);
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        Check(maximizedTarget != nullptr, "create maximized pixel target");
+        Check(IsZoomed(maximizedTarget) != FALSE, "pixel target is maximized");
+        UpdateWindow(maximizedTarget);
+        PumpFor(60);
         DwmFlush();
         std::cout << "Reveal on maximized target\n";
-        TestRevealPixels(target);
+        try { TestRevealPixels(maximizedTarget); }
+        catch (...) { DestroyWindow(maximizedTarget); throw; }
+        DestroyWindow(maximizedTarget);
     }
 }
 int main(int argc, char** argv)
 {
-    bool profile = false, maximizedOnly = false, revealOnly = false;
+    bool profile = false, maximizedOnly = false, revealOnly = false, revealMaximizedOnly = false;
     for (int i = 1; i < argc; ++i)
     {
         profile |= std::string(argv[i]) == "--profile";
         maximizedOnly |= std::string(argv[i]) == "--maximized";
         revealOnly |= std::string(argv[i]) == "--reveal";
+        revealMaximizedOnly |= std::string(argv[i]) == "--reveal-maximized";
     }
     if (profile)
     {
@@ -541,7 +569,7 @@ int main(int argc, char** argv)
     try
     {
         Check(target != nullptr, "create test target");
-        if (revealOnly) TestRevealOnDisplays(target);
+        if (revealOnly || revealMaximizedOnly) TestRevealOnDisplays(target, revealMaximizedOnly);
         else
         {
             if (!maximizedOnly)

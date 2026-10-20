@@ -35,6 +35,12 @@ try {
             [IO.File]::ReadAllText($diagnostics) -notmatch '\d{2}:\d{2}:\d{2}\.\d{3} \[INFO\]') {
             throw 'Tray exit did not preserve timestamped session diagnostics.'
         }
+        $diagnosticText = [IO.File]::ReadAllText($diagnostics)
+        if (-not $diagnosticText.Contains("Executable: $executable") -or
+            $diagnosticText -notmatch '(?m)^Build: .+' -or
+            -not $diagnosticText.Contains("Settings: $testProfile")) {
+            throw 'Diagnostics did not identify the running build and settings profile.'
+        }
     }
 } finally {
     Pop-Location

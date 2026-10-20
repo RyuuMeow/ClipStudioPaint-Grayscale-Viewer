@@ -12,6 +12,9 @@ namespace csp::core
         constexpr UINT kFocusUpdate = WM_APP + 10;
         constexpr UINT kRendererUpdate = WM_APP + 11;
         constexpr UINT_PTR kReleaseIdle = 1;
+        constexpr UINT_PTR kFocusWatchdog = 2;
+        constexpr UINT kFocusCheckMs = 250;
+        constexpr ULONGLONG kFocusRetryMs = 1000;
         constexpr wchar_t kControlClass[] = L"CSP_GrayscaleControl";
     }
 
@@ -44,6 +47,11 @@ namespace csp::core
         D3DOverlay.SetNotificationWindow(ControlWindow, kRendererUpdate);
         MagOverlay.SetNotificationWindow(ControlWindow, kRendererUpdate);
         if (!FocusTracker.Start([this](HWND, bool) { QueueFocusUpdate(); })) return false;
+        if (!SetTimer(ControlWindow, kFocusWatchdog, kFocusCheckMs, nullptr))
+        {
+            LOG_ERROR(L"Cannot start focus recovery timer (error %u)", GetLastError());
+            return false;
+        }
         ReevaluateFocus();
         LOG_INFO(L"Native tray core initialized; renderers start on demand");
         return true;
@@ -146,18 +154,43 @@ namespace csp::core
     }
     void Application::ReevaluateFocus()
     {
-        HWND foreground = ReadForeground();
-        HWND target = nullptr;
-        if (!Suspended && foreground && window::WindowFinder::IsTargetWindow(foreground))
+        RefreshFocus(false);
+    }
+    void Application::RefreshFocus(bool periodic)
+    {
+        const HWND foreground = ReadForeground();
+        HWND root = foreground ? GetAncestor(foreground, GA_ROOTOWNER) : nullptr;
+        if (!root) root = foreground;
+        const bool usable = root && IsWindowVisible(root) && !IsIconic(root);
+        const ULONGLONG now = GetTickCount64();
+        const bool changed = foreground != LastForeground || root != LastRoot || usable != LastRootUsable;
+        const bool retryResolution = !Suspended && foreground && !FocusedTarget &&
+            now - LastFocusCheck >= kFocusRetryMs;
+        const bool retryShortcut = HotkeyConflict && now - LastHotkeyAttempt >= kFocusRetryMs;
+        if (periodic && !changed && !retryResolution)
         {
-            target = GetAncestor(foreground, GA_ROOTOWNER);
-            if (!target) target = foreground;
-            if (IsIconic(target) || !IsWindowVisible(target)) target = nullptr;
+            // Stable focus needs no process lookup, renderer selection or driver work.
+            if (retryShortcut)
+            {
+                HotkeyConflict = false;
+                SyncHotkey(FocusedTarget != nullptr);
+                NotifyState();
+            }
+            return;
         }
+        LastForeground = foreground;
+        LastRoot = root;
+        LastRootUsable = usable;
+        LastFocusCheck = now;
+        HWND target = nullptr;
+        if (!Suspended && usable && window::WindowFinder::IsTargetWindow(foreground)) target = root;
         const HWND previous = FocusedTarget;
         FocusedTarget = target;
+        if (retryShortcut) HotkeyConflict = false;
         if (previous != target)
         {
+            LOG_INFO(L"Focus target changed: foreground=%p, target=%p, source=%s",
+                foreground, target, periodic ? L"periodic recovery" : L"event or command");
             HotkeyConflict = false;
             // A new focus session can retry a transient capture failure once.
             if (target && D3DFailed)
@@ -184,6 +217,7 @@ namespace csp::core
         }
         else if (wanted && !HotkeyRegistered && !HotkeyConflict)
         {
+            LastHotkeyAttempt = GetTickCount64();
             HotkeyRegistered = HotkeyManager.Register(HotkeyId, ToggleKey.Modifiers, ToggleKey.Key,
                 [this] { ToggleGrayscale(); });
             HotkeyConflict = !HotkeyRegistered;
@@ -331,6 +365,11 @@ namespace csp::core
             {
                 KillTimer(hwnd, kReleaseIdle);
                 if (self->CurrentBackend == Backend::None) self->MagOverlay.ReleaseResources();
+                return 0;
+            }
+            if (msg == WM_TIMER && wp == kFocusWatchdog)
+            {
+                self->RefreshFocus(true);
                 return 0;
             }
         }

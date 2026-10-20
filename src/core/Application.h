@@ -42,6 +42,7 @@ namespace csp::core
         enum class Backend { None, Magnification, Direct3D };
         static LRESULT CALLBACK ControlWndProc(HWND, UINT, WPARAM, LPARAM);
         void QueueFocusUpdate();
+        void RefreshFocus(bool Periodic);
         void SyncOverlay(HWND Target);
         void HideOverlays();
         bool Active() const;
@@ -54,6 +55,11 @@ namespace csp::core
         std::function<HWND()> ReadForeground;
         HWND ControlWindow = nullptr;
         HWND FocusedTarget = nullptr;
+        HWND LastForeground = nullptr;
+        HWND LastRoot = nullptr;
+        bool LastRootUsable = false;
+        ULONGLONG LastFocusCheck = 0;
+        ULONGLONG LastHotkeyAttempt = 0;
         Backend CurrentBackend = Backend::None;
         bool Enabled = false;
         bool FocusOnly = true;
