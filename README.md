@@ -1,93 +1,60 @@
 # CSP Grayscale Viewer
 
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-Windows-blue">
-  <img src="https://img.shields.io/badge/language-C++20-blue">
-  <img src="https://img.shields.io/badge/framework-Qt%206.9-green">
-  <img src="https://img.shields.io/github/license/RyuuMeow/ClipStudioPaint-Grayscale-Viewer">
-</p>
+[English](README.md) | [繁體中文](README.zh-TW.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja-JP.md)
 
-<p align="center">
-  <a href="README.md">English</a> |
-  <a href="README.zh-TW.md">繁體中文</a> |
-  <a href="README.zh-CN.md">简体中文</a> |
-  <a href="README.ja-JP.md">日本語</a>
-</p>
+A native Windows tray utility for checking grayscale values in Clip Studio Paint and other drawing apps. The click-through preview does not change your artwork or inject code into the drawing app.
 
-<p align="center">
-  <img src="demo/demo.gif" alt="CSP Grayscale Viewer demo">
-</p>
+**Version 1.1.0** · [Changelog](CHANGELOG.md)
 
-CSP Grayscale Viewer is a lightweight grayscale preview helper for Clip Studio Paint and other drawing applications on Windows. It overlays a click-through grayscale preview on top of the target app, so you can quickly check values without changing your artwork.
+## Use
 
-## Why This Approach
+1. Download an installer or portable build from [Releases](../../releases), or build the source below.
+2. Run `CSP-Grayscale-Viewer.exe`. It appears in the Windows notification area.
+3. Focus Clip Studio Paint and press **F9** to toggle the preview. Left-clicking the tray icon also toggles it.
+4. Right-click the icon to choose target applications, set a shortcut, change the refresh limit or renderer, enable Windows startup, open diagnostics, or exit.
 
-- **No DLL injection, no hooks, no memory patching**: The app does not inject code into Clip Studio Paint, hook its rendering pipeline, or modify its process memory.
-- **Non-invasive by design**: CSP keeps rendering normally. The grayscale preview is drawn by a separate overlay window.
-- **Lower crash risk for your drawing app**: Because the tool runs out-of-process and avoids touching CSP internals, renderer failures should not take CSP down with it.
-- **Made for drawing flow**: The overlay is click-through, so pen strokes, mouse input, shortcuts, and canvas interaction continue to go to CSP.
-- **Live preview while drawing**: The preview updates while you paint, making it useful for checking values during normal work instead of exporting or duplicating layers.
-- **Efficient native implementation**: Built in C++20 with Win32, Qt, Windows Magnification, and an experimental D3D11 backend.
+Shortcut and target editing use small native dialogs created only when opened. The shortcut is registered only while a target is focused by default; a conflicting replacement keeps the previous binding. The Win modifier is supported, and F12 is reserved by Windows.
 
-## Features
+## Rendering
 
-- **Target-aware overlay**: The grayscale preview is only active when a configured target application, such as `CLIPStudioPaint.exe`, is focused.
-- **Global hotkey**: Toggle grayscale with a customizable shortcut. The default key is `F9`.
-- **Focus-only hotkey mode**: Prevents the shortcut from being captured while you are working in other applications.
-- **Two renderer backends**:
-  - **Magnification**: Stable compatibility mode based on the Windows Magnification API.
-  - **Experimental Direct3D**: GPU-based renderer for smoother preview and future effects.
-- **Click-through overlay**: Mouse and pen input pass through to the drawing app.
-- **Modern Qt tray app**: Runs quietly in the system tray with a small settings window.
-- **Runtime log page**: Inspect focus, hotkey, and renderer diagnostics from inside the app.
+New profiles use **Direct3D** at a 60 fps limit. Capture and tray updates run in the background so they do not block shortcuts. Hidden previews stop rendering, and cached graphics resources make reopening faster. Focus recovery restores shortcuts if a focus notification is missed.
 
-## How It Works
+**Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it for capture failures, windows spanning displays and rotated displays. Invisible maximized-window borders do not trigger a false fallback. The tray menu identifies the active mode.
 
-The app tracks the foreground window and attaches an overlay to your configured target application. In Magnification mode, it uses the Windows Magnification API with a grayscale color matrix. In experimental Direct3D mode, it captures the desktop output, crops the target window area, applies a grayscale pixel shader, and presents the result through a DirectComposition overlay.
+- **Automatic** follows the target display refresh rate. Manual limits are also capped to that rate: up to 144 fps for Direct3D and 100 fps for Magnification. These are limits, not guaranteed frame rates.
+- Direct3D requires Windows 10 version 2004 or later; older versions use compatibility mode.
+- HDR, protected content, remote sessions, multiple GPUs and physical pen latency still need environment-specific validation.
 
-## Installation
+## Settings and migration
 
-1. Download the latest installer from [Releases](../../releases).
-2. Run `CSP-Grayscale-Viewer_Setup.exe`.
-3. Launch CSP Grayscale Viewer and configure your target applications and hotkey.
+Before upgrading, exit the running viewer from its tray menu. Install the update over the existing installation, or replace the portable files. Only one instance runs per settings profile, so opening a new copy while an old one is running reuses that old instance. After moving a portable executable, turn **Start with Windows** off and on from the new location.
 
-## Usage
+Settings are validated before use and saved by atomic file replacement to `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`. On first native launch, an existing `settings.ini` in that folder is imported without modifying the original. Existing renderer preferences are retained. The old settings window and its start-minimized option are replaced by tray-only startup.
 
-1. Open Clip Studio Paint or another configured drawing app.
-2. Press the configured hotkey, default `F9`, to toggle grayscale preview.
-3. Open the tray app to adjust refresh rate, target applications, hotkey, startup behavior, and renderer backend.
-4. Use the Log page when diagnosing renderer or focus behavior.
+`Open diagnostics` exports the bounded in-memory log beside the settings file. Normal exit also saves it as `diagnostics.log`, including the executable path, build time, settings path, timestamps and received shortcut events. No live log window or continuous log-file writes are needed.
 
-## Renderer Notes
-
-Use **Magnification** mode when you want maximum compatibility. Use **Experimental Direct3D** mode when you want smoother rendering and are willing to test the newer backend.
-
-The Direct3D backend is still experimental. It is intended as the foundation for future GPU effects such as contrast checks, gamma preview, LUTs, and color vision simulation.
-
-## Build
-
-### Requirements
-
-- Windows 10 / 11
-- Visual Studio 2022 with MSVC
-- CMake 3.20 or later
-- Qt 6.9.0 or later
-- Inno Setup 6, only required for installer packaging
-
-### Commands
+For an isolated profile:
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_PREFIX_PATH="C:/path/to/Qt/6.9.0/msvc2022_64"
-cmake --build build --config Release --parallel
-
-New-Item -ItemType Directory -Force deploy
-Copy-Item build/Release/CSP-Grayscale-Viewer.exe deploy/
-Copy-Item build/Release/CSP-Grayscale-Viewer_Console.exe deploy/
-windeployqt --release --no-translations --no-opengl-sw deploy/CSP-Grayscale-Viewer.exe
+.\CSP-Grayscale-Viewer.exe --settings .\test-settings.ini --configure
 ```
 
-## License
+## Build and test
 
-This project is released under the [MIT License](LICENSE).
+Requires Windows 10/11 x64, Visual Studio 2022 with Desktop development with C++ and a Windows SDK, and CMake 3.20+. Qt and a separately installed MSVC runtime are not required.
 
-Qt is used through dynamic linking and is licensed under LGPL. Users may replace the Qt runtime DLLs in the installation directory when needed.
+```powershell
+.\scripts\test.ps1 -Configuration Release -Smoke
+```
+
+Outputs are in `build/native/Release`. The GUI executable is portable on its own; the optional `_Console.exe` runs with default settings and console diagnostics. Inno Setup 6 is only needed to package the installer.
+
+See [testing and architecture notes](docs/testing.md) for Debug, desktop renderer tests, and manual checks. Windows CI runs the core regressions and tray smoke test for Debug and Release.
+
+## Demo and license
+
+![Grayscale preview demo](demo/demo.gif)
+
+The demo shows the preview effect; its settings UI predates the native tray version.
+
+[MIT License](LICENSE).

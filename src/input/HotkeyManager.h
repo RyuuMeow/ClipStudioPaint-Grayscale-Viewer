@@ -24,12 +24,15 @@ namespace csp::input
         HotkeyManager& operator=(const HotkeyManager&) = delete;
 
         bool Register(int Id, UINT Modifiers, UINT Vk, std::function<void()> Action);
+        void SetWindow(HWND Window) { MessageWindow = Window; }
+        void Unregister(int Id);
         void UnregisterAll();
 
         void HandleHotkey(int Id);
 
     private:
         std::vector<HotkeyBinding> Bindings;
+        HWND MessageWindow = nullptr;
     };
 
 }

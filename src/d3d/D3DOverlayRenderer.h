@@ -29,17 +29,22 @@ namespace csp::d3d
         void Hide();
 
         void SetRefreshRate(int Fps);
+        void SetNotificationWindow(HWND Window, UINT Message) { NotifyWindow = Window; NotifyMessage = Message; }
 
-        bool IsVisible() const { return Visible && HostWnd && IsWindowVisible(HostWnd); }
+        bool IsVisible() const { return Visible.load() && Presented.load(); }
         bool IsInitialized() const { return Initialized; }
-        HWND TargetWindow() const { return TargetWnd; }
+        HWND TargetWindow() const { return RequestedTarget.load(); }
+        bool HasFailed() const { return Failed.load(); }
+        bool HasDeviceResources() const { return ResourcesAllocated.load(); }
+        bool HasFrameResources() const { return FrameResourcesAllocated.load(); }
+        uint64_t DeviceCreationCount() const { return DevicesCreated.load(); }
+        uint64_t PresentedFrameCount() const { return FramesPresented.load(); }
 
     private:
         static LRESULT CALLBACK HostWndProc(HWND Hwnd, UINT Msg, WPARAM WParam, LPARAM LParam);
 
         bool CreateHostWindow();
         void ApplyClickThroughStyles();
-        bool InitializeDevice();
         bool InitializeDeviceForMonitor(HMONITOR Monitor);
         bool CreateShaders();
         bool CreateSwapChain(int Width, int Height);
@@ -47,23 +52,48 @@ namespace csp::d3d
         bool EnsureDuplication();
         bool EnsureCaptureTexture(int Width, int Height);
         bool RenderFrame();
+        bool RevealFirstFrame();
         bool UpdateTargetRect(RECT& TargetRect);
 
         void StartRefreshLoop();
         void StopRefreshLoop();
+        void RunWorker();
+        void Wake();
+        void Notify();
+        void ReportFailure();
 
         void ReleaseDuplication();
         void ReleaseDeviceResources();
+        void ReleaseFrameResources();
         void ReleaseSwapChainResources();
 
-        UINT TimerIntervalMs = 16;
         std::atomic<bool> RefreshLoopRunning = false;
-        std::atomic<bool> RefreshPending = false;
+        std::atomic<UINT> RequestedFps = 60;
+        std::atomic<HWND> RequestedTarget = nullptr;
+        std::atomic<uint64_t> Revision = 0;
+        std::atomic<bool> Presented = false;
+        std::atomic<bool> Failed = false;
+        std::atomic<bool> ResourcesAllocated = false;
+        std::atomic<bool> FrameResourcesAllocated = false;
+        std::atomic<uint64_t> DevicesCreated = 0;
+        std::atomic<uint64_t> FramesPresented = 0;
         std::thread RefreshThread;
+        HANDLE WakeEvent = nullptr;
+        HANDLE ReadyEvent = nullptr;
+        HANDLE PaceTimer = nullptr;
+        HWND NotifyWindow = nullptr;
+        UINT NotifyMessage = 0;
+        bool WorkerReady = false;
+        bool RecreateRequested = false;
+        bool CaptureInvalid = true;
+        bool PresentationPending = false;
+        unsigned AccessLossCount = 0;
+        uint64_t FrameRevision = 0;
 
+        // Only the worker touches the HWND, D3D immediate context and COM resources.
         HWND HostWnd = nullptr;
         HWND TargetWnd = nullptr;
-        bool Visible = false;
+        std::atomic<bool> Visible = false;
         bool Initialized = false;
         bool HasCapturedFrame = false;
 

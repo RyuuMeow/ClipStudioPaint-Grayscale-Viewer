@@ -1,47 +1,32 @@
 name: Windows CI
-
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main, master]
   pull_request:
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
   build:
-    runs-on: windows-latest
-
+    # Matches the Visual Studio 2022 generator in CMakePresets.json.
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        configuration: [Release, Debug]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v3
-        with:
-          version: '6.9.0'
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-
-      - name: Configure
+      - uses: actions/checkout@v4
+      - name: Validate release metadata
         shell: pwsh
-        run: >
-          cmake -S . -B build
-          -G "Visual Studio 17 2022"
-          -A x64
-          -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
-
-      - name: Build
-        run: cmake --build build --config Release --parallel
-
-      - name: Upload binaries
+        run: ./scripts/prepare-release.ps1
+      - name: Build and test native application
+        shell: pwsh
+        run: ./scripts/test.ps1 -Configuration ${{ matrix.configuration }} -Smoke
+      - name: Upload portable binaries
+        if: matrix.configuration == 'Release'
         uses: actions/upload-artifact@v4
         with:
-          name: CSP-Grayscale-Viewer-Release
+          name: CSP-Grayscale-Viewer-Native
           path: |
-            build/Release/CSP-Grayscale-Viewer.exe
-            build/Release/CSP-Grayscale-Viewer_Console.exe
+            build/native/Release/CSP-Grayscale-Viewer.exe
+            build/native/Release/CSP-Grayscale-Viewer_Console.exe
+            LICENSE

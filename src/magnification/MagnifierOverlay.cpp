@@ -1,5 +1,6 @@
 #include "magnification/MagnifierOverlay.h"
 #include "util/Logger.h"
+#include "window/WindowGeometry.h"
 #include <dwmapi.h>
 #include <mmsystem.h>
 #include <shobjidl.h>
@@ -8,8 +9,6 @@
 
 namespace csp::magnification
 {
-
-    MagnifierOverlay* MagnifierOverlay::Instance = nullptr;
 
     namespace
     {
@@ -29,12 +28,7 @@ namespace csp::magnification
 
     // ─── Lifecycle ───────────────────────────────────────────────────────
 
-    MagnifierOverlay::~MagnifierOverlay()
-    {
-        Shutdown();
-    }
-
-    bool MagnifierOverlay::Initialize()
+    bool MagnifierOverlay::InitializeResources()
     {
         if (Initialized)
         {
@@ -47,37 +41,38 @@ namespace csp::magnification
             return false;
         }
 
-        Instance = this;
+        LastRect = {};
 
         if (!CreateHostWindow())
         {
             MagUninitialize();
-            Instance = nullptr;
             return false;
         }
 
         if (!CreateMagnifierControl())
         {
             DestroyWindow(HostWnd);
+            MagWnd = nullptr;
             HostWnd = nullptr;
             MagUninitialize();
-            Instance = nullptr;
             return false;
         }
 
         Initialized = true;
+        ResourcesReady.store(true);
         LOG_INFO(L"MagnifierOverlay initialized");
         return true;
     }
 
-    void MagnifierOverlay::Shutdown()
+    void MagnifierOverlay::DestroyResources()
     {
         if (!Initialized)
         {
             return;
         }
 
-        Hide();
+        HideOnWorker();
+        ResourcesReady.store(false);
 
         if (MagWnd)
         { DestroyWindow(MagWnd);  MagWnd = nullptr; }
@@ -85,8 +80,9 @@ namespace csp::magnification
         { DestroyWindow(HostWnd); HostWnd = nullptr; }
 
         MagUninitialize();
-        Instance = nullptr;
         Initialized = false;
+        TargetWnd = nullptr;
+        LastRect = {};
         LOG_INFO(L"MagnifierOverlay shut down");
     }
 
@@ -120,7 +116,7 @@ namespace csp::magnification
             0, 0, 1, 1,
             nullptr, nullptr,
             GetModuleHandleW(nullptr),
-            nullptr
+            this
         );
 
         if (!HostWnd)
@@ -180,6 +176,7 @@ namespace csp::magnification
         if (!MagSetColorEffect(MagWnd, const_cast<PMAGCOLOREFFECT>(&kGrayscaleEffect)))
         {
             LOG_WARNING(L"MagSetColorEffect failed (error %u)", GetLastError());
+            return false;
         }
 
         // Exclude host window from capture to prevent feedback loop
@@ -187,6 +184,7 @@ namespace csp::magnification
         if (!MagSetWindowFilterList(MagWnd, MW_FILTERMODE_EXCLUDE, 1, excludeList))
         {
             LOG_WARNING(L"MagSetWindowFilterList failed (error %u)", GetLastError());
+            return false;
         }
 
         return true;
@@ -194,20 +192,9 @@ namespace csp::magnification
 
     // ─── Show / Hide / Attach ────────────────────────────────────────────
 
-    void MagnifierOverlay::Attach(HWND targetWindow)
+    void MagnifierOverlay::ShowOnWorker()
     {
-        TargetWnd = targetWindow;
-    }
-
-    void MagnifierOverlay::Detach()
-    {
-        Hide();
-        TargetWnd = nullptr;
-    }
-
-    void MagnifierOverlay::Show()
-    {
-        if (!Initialized || !TargetWnd)
+        if (!Initialized || !TargetWnd || !RequestIsCurrent())
         {
             return;
         }
@@ -223,47 +210,31 @@ namespace csp::magnification
         Visible = true;
         EnableHighResolutionTimer();
         UpdateOverlay();
+        if (!Visible || !RequestIsCurrent()) { HideOnWorker(); return; }
         
         // Force immediate synchronous redraw to prevent old frames from flashing
         UpdateWindow(HostWnd);
         UpdateWindow(MagWnd);
 
+        if (!RequestIsCurrent()) { HideOnWorker(); return; }
         StartRefreshLoop();
-        LOG_INFO(L"Grayscale overlay shown");
     }
 
-    void MagnifierOverlay::Hide()
+    void MagnifierOverlay::HideOnWorker()
     {
         if (!Visible)
         {
             return;
         }
 
+        Visible = false;
+        Presented.store(false);
         StopRefreshLoop();
         DisableHighResolutionTimer();
         ShowWindow(HostWnd, SW_HIDE);
-        Visible = false;
+        Notify();
 
         LOG_INFO(L"Grayscale overlay hidden");
-    }
-
-    void MagnifierOverlay::SetRefreshRate(int fps)
-    {
-        if (fps < 1)
-        {
-            fps = 1;
-        }
-        if (fps > 240)
-        {
-            fps = 240;
-        }
-        UINT interval = static_cast<UINT>(1000 / fps);
-        if (interval < 1)
-        {
-            interval = 1;
-        }
-        TimerIntervalMs = interval;
-        LOG_INFO(L"Refresh rate set to %d fps (%u ms)", fps, interval);
     }
 
     void MagnifierOverlay::EnableHighResolutionTimer()
@@ -296,12 +267,17 @@ namespace csp::magnification
 
     void MagnifierOverlay::StartRefreshLoop()
     {
-        if (!HostWnd)
+        if (!HostWnd || !Visible)
         {
             return;
         }
 
-        SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr);
+        if (!SetTimer(HostWnd, kTimerId, TimerIntervalMs, nullptr))
+        {
+            LOG_ERROR(L"Cannot start Magnification timer (error %u)", GetLastError());
+            HideOnWorker();
+            ReportFailure();
+        }
     }
 
     void MagnifierOverlay::StopRefreshLoop()
@@ -318,9 +294,10 @@ namespace csp::magnification
 
     void MagnifierOverlay::UpdateOverlay()
     {
+        if (!Visible || !RequestIsCurrent()) return;
         if (!TargetWnd || !IsWindow(TargetWnd))
         {
-            Hide();
+            HideOnWorker();
             return;
         }
 
@@ -332,6 +309,10 @@ namespace csp::magnification
             if (isWindowVisible)
             {
                 ShowWindow(HostWnd, SW_HIDE);
+                Presented.store(false);
+                ShowFrames = 0;
+                SetLayeredWindowAttributes(HostWnd, 0, 1, LWA_ALPHA);
+                Notify();
             }
             return;
         }
@@ -345,11 +326,15 @@ namespace csp::magnification
 
         // Get target window's screen rectangle
         // Use DwmGetWindowAttribute to get visual bounds (excluding invisible drop shadow/borders)
-        RECT rc;
+        RECT rc{};
         if (FAILED(DwmGetWindowAttribute(TargetWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rc, sizeof(rc))))
         {
-            GetWindowRect(TargetWnd, &rc);
+            if (!GetWindowRect(TargetWnd, &rc)) { HideOnWorker(); return; }
         }
+
+        MONITORINFO monitor{sizeof(monitor)};
+        if (GetMonitorInfoW(MonitorFromWindow(TargetWnd, MONITOR_DEFAULTTONEAREST), &monitor))
+            rc = window::VisibleCaptureBounds(TargetWnd, rc, monitor.rcMonitor);
 
         int w = rc.right  - rc.left;
         int h = rc.bottom - rc.top;
@@ -382,13 +367,21 @@ namespace csp::magnification
         // Refresh the captured source every frame. The magnifier control does
         // not reliably pick up high-frequency drawing changes from invalidation alone.
         RECT sourceRect = { rc.left, rc.top, rc.right, rc.bottom };
-        MagSetWindowSource(MagWnd, sourceRect);
+        if (!MagSetWindowSource(MagWnd, sourceRect))
+        {
+            LOG_ERROR(L"MagSetWindowSource failed (error %u)", GetLastError());
+            HideOnWorker();
+            ReportFailure();
+            return;
+        }
+
+        if (!RequestIsCurrent()) { HideOnWorker(); return; }
 
         // Always invalidate to refresh content (user may be drawing).
         // FALSE = don't erase background, reduces flicker
         InvalidateRect(MagWnd, nullptr, FALSE);
 
-        // Fade-in mechanism: Wait 2 frames before making the window fully visible
+        // Wait for three source updates before making the window fully visible.
         // This gives the Magnifier control enough time to capture the new screen state
         if (ShowFrames < kDelayFrames)
         {
@@ -396,6 +389,11 @@ namespace csp::magnification
             if (ShowFrames == kDelayFrames)
             {
                 SetLayeredWindowAttributes(HostWnd, 0, 255, LWA_ALPHA);
+                if (!RequestIsCurrent()) { HideOnWorker(); return; }
+                PresentedRevision.store(WorkerRevision);
+                Presented.store(true);
+                Notify();
+                LOG_INFO(L"Grayscale overlay shown");
             }
         }
     }
@@ -405,12 +403,18 @@ namespace csp::magnification
     LRESULT CALLBACK MagnifierOverlay::HostWndProc(
         HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
     {
+        auto* self = reinterpret_cast<MagnifierOverlay*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (msg == WM_NCCREATE)
+        {
+            self = static_cast<MagnifierOverlay*>(reinterpret_cast<CREATESTRUCTW*>(lParam)->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        }
         switch (msg)
         {
         case WM_TIMER:
-            if (wParam == kTimerId && Instance)
+            if (wParam == kTimerId && self)
             {
-                Instance->UpdateOverlay();
+                self->UpdateOverlay();
             }
             return 0;
 

@@ -1,0 +1,10 @@
+#pragma once
+#define IDI_APP 1
+#define IDI_TRAY 2
+#define IDD_HOTKEY 101
+#define IDD_TARGETS 102
+#define IDC_HOTKEY 1001
+#define IDC_WIN_KEY 1002
+#define IDC_TARGET_LIST 1003
+#define IDC_PROCESS_LIST 1004
+#define IDC_ADD_PROCESS 1005

@@ -29,6 +29,8 @@ namespace csp::window
         );
 
         HWINEVENTHOOK Hook = nullptr;
+        HWINEVENTHOOK LocationHook = nullptr;
+        HWINEVENTHOOK MinimizeHook = nullptr;
 
         static FocusChangeCallback FocusCallback;
     };

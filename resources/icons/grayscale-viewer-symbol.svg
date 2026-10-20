@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Grayscale Viewer icon without background tile">
+  <path d="M65 63H128V147L101 176H65Q57 176 57 168V71Q57 63 65 63Z" fill="#D5D5D5"/>
+  <path d="M128 63H190Q198 63 198 71V120L176 128L128 159Z" fill="#252525"/>
+  <path d="M61 187C52.2 187 45 179.8 45 171V68C45 56.4 54.4 47 66 47H189C200.6 47 210 56.4 210 68V123H198V68C198 63 194 59 189 59H66C61 59 57 63 57 68V171C57 174 59 175 62 175H99L112 187Z" fill="#FFFFFF"/>
+  <path d="M110 169C127 146 149 133 174 133C199 133 220 146 237 169C220 192 199 205 174 205C149 205 127 192 110 169Z" fill="#1C1C1C" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round"/>
+  <circle cx="174" cy="169" r="25" fill="#D1D1D1"/>
+  <path d="M174 144A25 25 0 0 1 174 194Z" fill="#777777"/>
+</svg>

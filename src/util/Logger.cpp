@@ -22,7 +22,7 @@ namespace csp::util
     std::vector<std::wstring> Logger::History() const
     {
         std::lock_guard lock(g_logMutex);
-        return Lines;
+        return {Lines.begin(), Lines.end()};
     }
 
     void Logger::Debug(const wchar_t* fmt, ...)
@@ -79,7 +79,10 @@ namespace csp::util
         }
 
         wchar_t line[1100];
-        _snwprintf_s(line, _countof(line), _TRUNCATE, L"%s %s\n", Prefix, buf);
+        SYSTEMTIME time{};
+        GetLocalTime(&time);
+        _snwprintf_s(line, _countof(line), _TRUNCATE, L"%02u:%02u:%02u.%03u %s %s\n",
+            time.wHour, time.wMinute, time.wSecond, time.wMilliseconds, Prefix, buf);
 
         LogSink sink;
         {
@@ -88,7 +91,7 @@ namespace csp::util
             Lines.emplace_back(line);
             if (Lines.size() > 1000)
             {
-                Lines.erase(Lines.begin());
+                Lines.pop_front();
             }
             sink = SinkCallback;
 
