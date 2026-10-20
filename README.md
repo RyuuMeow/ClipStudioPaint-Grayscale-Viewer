@@ -4,6 +4,8 @@
 
 A native Windows tray utility for checking grayscale values in Clip Studio Paint and other drawing apps. The click-through preview does not change your artwork or inject code into the drawing app.
 
+**Version 1.1.0** · [Changelog](CHANGELOG.md)
+
 ## Use
 
 1. Download an installer or portable build from [Releases](../../releases), or build the source below.
@@ -15,20 +17,17 @@ Shortcut and target editing use small native dialogs created only when opened. T
 
 ## Rendering
 
-New profiles use **Direct3D** with a 60 fps limit. Capture, grayscale conversion, and presentation run on a dedicated worker. There is no per-frame UI message queue; duplicate timeout and cursor-only frames are skipped. Hidden previews stop rendering and release image buffers after five seconds, while retaining the device and shaders for fast resume. Focus tracking uses Windows events with a lightweight 250 ms recovery check; stable target focus does not repeat renderer selection.
+New profiles use **Direct3D** at a 60 fps limit. Capture and tray updates run in the background so they do not block shortcuts. Hidden previews stop rendering, and cached graphics resources make reopening faster. Focus recovery restores shortcuts if a focus notification is missed.
 
-**Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it when capture fails, the target spans monitors, or the display is rotated. Switching back to the target retries a transient D3D failure. The tray status identifies the active mode.
+**Magnification** remains available as a selectable compatibility mode. Direct3D falls back to it for capture failures, windows spanning displays and rotated displays. Invisible maximized-window borders do not trigger a false fallback. The tray menu identifies the active mode.
 
-Invisible sizing borders on a maximized window are excluded from capture, so they do not cause a false multi-monitor fallback. Notification-area updates run in the background and keep only the latest status, preventing slow Explorer updates from blocking shortcuts.
-
-Magnification also runs on its own worker, including initialization and idle cleanup, so capture work does not hold up shortcut processing. Rapid changes cancel obsolete preview requests; the status becomes active after the transparent warm-up finishes.
-
-- **Automatic** follows the target monitor's refresh rate. Explicit limits are also capped to the monitor rate.
-- Direct3D is capped at 144 fps; Magnification is capped at 100 fps by its Windows timer. These are limits, not guaranteed achieved rates.
-- Direct3D requires Windows 10 version 2004 or later for [overlay exclusion from capture](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity). Earlier versions use compatibility mode.
-- HDR, protected content, remote sessions, multiple GPUs, and actual tablet latency still need validation on the relevant hardware. No numerical latency improvement is claimed.
+- **Automatic** follows the target display refresh rate. Manual limits are also capped to that rate: up to 144 fps for Direct3D and 100 fps for Magnification. These are limits, not guaranteed frame rates.
+- Direct3D requires Windows 10 version 2004 or later; older versions use compatibility mode.
+- HDR, protected content, remote sessions, multiple GPUs and physical pen latency still need environment-specific validation.
 
 ## Settings and migration
+
+Before upgrading, exit the running viewer from its tray menu. Install the update over the existing installation, or replace the portable files. Only one instance runs per settings profile, so opening a new copy while an old one is running reuses that old instance. After moving a portable executable, turn **Start with Windows** off and on from the new location.
 
 Settings are validated before use and saved by atomic file replacement to `%APPDATA%\CSP-Grayscale-Viewer\native-settings.ini`. On first native launch, an existing `settings.ini` in that folder is imported without modifying the original. Existing renderer preferences are retained. The old settings window and its start-minimized option are replaced by tray-only startup.
 

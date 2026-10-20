@@ -17,6 +17,7 @@ try {
     $files = @('deploy/CSP-Grayscale-Viewer.exe', 'deploy/CSP-Grayscale-Viewer_Console.exe', 'deploy/LICENSE')
     $archive = 'build/native/CSP-Grayscale-Viewer-Native-Portable.zip'
     Compress-Archive -LiteralPath $files -DestinationPath $archive -Force
+    $packages = @($archive)
     Write-Output "Portable package: $archive"
     if ($Installer) {
         $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
@@ -24,7 +25,15 @@ try {
         & $compiler /Q installer.iss
         if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
         Write-Output 'Installer: Output/CSP-Grayscale-Viewer_Setup.exe'
+        $packages += 'Output/CSP-Grayscale-Viewer_Setup.exe'
     }
+    $checksums = foreach ($package in $packages) {
+        $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+        "$hash  $([IO.Path]::GetFileName($package))"
+    }
+    [IO.File]::WriteAllLines((Join-Path (Get-Location) 'build/native/SHA256SUMS.txt'),
+        [string[]]$checksums, [Text.UTF8Encoding]::new($false))
+    Write-Output 'Checksums: build/native/SHA256SUMS.txt'
 } finally {
     Pop-Location
 }

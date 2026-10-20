@@ -1,104 +1,94 @@
 # Development and verification
 
-## Automated checks
+## Current release
 
-Run from the repository root with Visual Studio 2022, Windows SDK and CMake installed:
+Version **1.1.0** is the native Windows tray release. User-facing changes and upgrade instructions are in the [changelog](../CHANGELOG.md). The application no longer depends on Qt; Direct3D and Magnification remain supported.
+
+Local verification on 2026-10-20 covered Release and Debug core tests, both renderers, shortcut/focus recovery, idle recovery and startup/diagnostic export. The final pixel checks completed 192 reveals and 3,002 samples across three displays and a maximized window without unexpected pixels. An in-place installation upgrade preserved the settings file and startup path, and the installed executable matched the tested Release binary. The user subsequently reported noticeably smoother operation in CSP; this is qualitative feedback, not a measured pen-to-display latency result.
+
+## Build and automated checks
+
+Requires Windows 10/11 x64, Visual Studio 2022 with Desktop development with C++, a Windows SDK, and CMake 3.20+:
 
 ```powershell
 .\scripts\test.ps1 -Configuration Release -Smoke
 .\scripts\test.ps1 -Configuration Debug -Smoke
 ```
 
-The script configures the `windows` CMake preset, builds, runs CTest, and optionally launches the tray application with an isolated profile under `build/native/smoke`. The smoke process exits after 1.5 seconds. It checks startup and shutdown, not Explorer icon visibility or dialog interaction. CI runs these checks in both configurations without Qt installation or deployment.
+The script configures the `windows` CMake preset, builds, and runs CTest. `-Smoke` launches a separate settings profile under `build/native/smoke`, exits after 1.5 seconds, and checks diagnostic identity and timestamps. It does not inspect menu/dialog appearance. GitHub CI runs these checks for both configurations.
 
-Core regressions cover complete settings round trips (including 120 fps and empty targets), legacy Qt INI migration, malformed input without partial application, UTF-8 files at Unicode paths, atomic replacement, shortcut parsing, native `WM_HOTKEY` routing, conflicting replacement retention, suspension and focus-only unregistration, monitor geometry, and refresh limits. The shortcut routing test sends a message to its own control window; it does not synthesize a physical key press.
+Core coverage includes settings round trips and migration, invalid-input handling, atomic UTF-8 saves, shortcut parsing/routing/conflicts, suspension, missed focus notifications, hide/show and minimize/restore, display geometry, refresh limits, and background notification-icon updates.
 
-Renderer integration requires an **unlocked desktop and a DXGI-capable GPU**. It displays a colored test window without taking focus, first small and then maximized with subtle animated updates:
+Desktop renderer checks require an **unlocked desktop and a DXGI-capable GPU**:
 
 ```powershell
 .\scripts\test.ps1 -Configuration Release -Smoke -Renderers
 ```
 
-This verifies transparent D3D startup, a completed first presentation, target resizing, 20 hide/show cycles per renderer, eight cancellations around first-frame preparation, no D3D presentations while hidden, five-second image-buffer release, reuse of the device after idle, cache invalidation on display changes, full shutdown, and stale Magnification timer messages. It also samples a known-color test window during 24 reveals on each display and another 24 at maximized size. A missing GPU/capture service is a failure, not a silent pass. The pixel checks cover this SDR test pattern; they do not establish arbitrary-content accuracy, tablet input latency, or HDR fidelity.
+These tests use their own windows and foreground provider; they do not change the user's actual focus or inject physical keys. They cover:
 
-## Idle measurements
+- Small and maximized windows with both renderers, rapid toggles, queued shortcut bursts and focus recovery.
+- Transparent startup, valid first frames, cancellation, resize, automatic compatibility fallback and return to Direct3D.
+- Hidden rendering stops, five-second image-buffer release, device reuse, display-change invalidation and shutdown.
+- Pixel checks on each display and at maximized size, verifying ownership of the sampled point before every read.
+
+A missing GPU/capture service fails the desktop suite. Focused renderer options are `--reveal`, `--reveal-maximized` and `--maximized`; `-ProfileRenderers` on the PowerShell script also prints setup and activation timings. Pixel coverage uses an SDR test pattern and does not establish HDR fidelity or arbitrary-content accuracy.
+
+## Architecture and constraints
+
+| Component | Responsibility |
+| --- | --- |
+| `tray/TrayApplication`, `SettingsDialogs` | Tray menu, on-demand dialogs, startup registration, single instance per profile, diagnostic export. |
+| `tray/NotificationIcon` | Worker-owned Shell icon operations; coalesces pending status updates and handles Explorer restart. |
+| `core/Settings` | Validated UTF-8 settings, atomic replacement and legacy migration. |
+| `core/Application` | Shortcut registration, focus recovery, renderer selection and fallback. |
+| `window/FocusTracker` | Foreground, location and minimize WinEvents, without injecting into drawing applications. |
+| `d3d/D3DOverlayRenderer` | Worker-owned window, D3D context, GPU textures and composition. |
+| `magnification/MagnifierOverlay`, `MagnifierWorker` | Worker-owned Magnification API, window, capture, painting and resource cleanup. |
+
+WinEvents handle focus changes immediately. A 250 ms recovery check compares foreground/root handles and visibility/minimization. Stable target focus skips process lookup and renderer selection. Unresolved identification and shortcut conflicts retry once per second. Focus-only and suspension rules still apply.
+
+Direct3D uses nonblocking capture and presentation. A pointer-only duplication update (`LastPresentTime=0`) is never copied as a new desktop image. The host begins transparent and is revealed only after a valid submission, composition commit and `DwmFlush`, with cancellation checked before reveal. Normal frames use `DXGI_PRESENT_DO_NOT_WAIT`. DXGI presentation statistics do not gate visibility because they can be unreliable with multiple displays. See Microsoft's [frame metadata](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_outdupl_frame_info), [composition flush](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmflush) and [frame statistics](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics) documentation.
+
+Hiding stops Direct3D rendering and releases desktop duplication. After five seconds, image buffers and composition objects are released and unused driver allocations are trimmed. The device and shaders stay cached for quick resume. Suspension, renderer changes, failure and shutdown release the cache; display changes invalidate it. This retains device memory while idle. The renderer has no idle capture/render timer; the application's focus recovery check remains active.
+
+Capture bounds exclude only a maximized window's hidden sizing border, using Windows DPI-aware border metrics. Restored windows genuinely spanning outputs and rotated outputs still select Magnification. Direct3D requires Windows 10 version 2004 [capture exclusion](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity). Magnification's initialization, painting and cleanup also run off the shortcut thread, and its status becomes active after its transparent warm-up.
+
+Icons are embedded at build time; see [icon sources](../resources/icons/README.md). No runtime image library is needed.
+
+## Diagnostics and performance
+
+`Open diagnostics` and normal exit save the last 1,000 in-memory records beside the active settings file as `diagnostics.log`. The header always identifies the executable path, compile time and settings path. Records include shortcut receipt, focus recovery, renderer state, fallback geometry, and UI dispatch/queue delays of at least 50 ms. There are no per-key disk writes or general keyboard hooks. Received-event counts do not prove how many physical key presses Windows delivered.
+
+When comparing builds, exit the existing tray instance first. Opening another executable with the same settings profile reuses the running instance. Check the diagnostic header and Windows startup path if an older build appears to be running.
 
 ```powershell
 .\scripts\measure-idle.ps1 -Seconds 10
 ```
 
-This launches an isolated Release profile with an empty target list, samples CPU over the specified interval after two seconds of warm-up, reports working set/private memory/executable size, and terminates only the process it started. CPU is expressed as a percentage of one logical core. A zero measurement means no CPU increment was observed during that interval; it is not proof of zero work under all conditions. Working set includes shared system DLL pages and is not interchangeable with private memory. Do not compare it with an active rendering workload or just the old executable size while excluding Qt DLLs.
+The measurement script uses an isolated empty-target profile, samples CPU after warm-up, reports working set/private memory/executable size, and terminates only its own process. CPU is expressed as a percentage of one logical core. A zero sample is not proof of zero work; working set includes shared DLL pages. Compare matching hardware, DPI, refresh rates, window sizes and workloads. Shortcut-handler time and automated activation timing are not pen-to-display latency; that requires instrumented input or a high-speed camera.
 
-Initial native-build verification on 2026-10-18 (Windows build 26300, MSVC 19.44, x64): Debug and Release passed the core suite, tray smoke test and both renderer integration tests. Before the custom icons and first-frame fix, a 10.01-second Release idle sample reported **14.30 MiB working set**, **2.74 MiB private memory**, **0.000% of one core** at the process timer's resolution, and a **420 KiB GUI executable**. Its import table contains Windows DLLs only. These are one-machine observations, not guarantees or a comparison with the old Qt build. Full menu interaction and actual CSP pen latency have not been manually verified. The installer was compiled, but installation was not exercised.
+## Packaging and release
 
-For meaningful latency/performance comparisons, use the same machine, window size, DPI, screen refresh rate, renderer and drawing workload. Measure idle, static preview, continuous drawing, resize/drag and focus changes separately. PresentMon/ETW and GPUView can examine frame pacing and GPU work; a high-speed camera or instrumented pen input is needed for end-to-end input-to-display latency.
+```powershell
+.\scripts\prepare-release.ps1 -Tag v1.1.0
+.\scripts\package.ps1 -Installer
+```
 
-## Architecture
+Preparation verifies agreement between the tag, CMake, executable resources, manifest and installer, then extracts the matching changelog entry. Packaging requires tested Release binaries and Inno Setup 6. It produces:
 
-- `tray/TrayApplication`: hidden broadcast window, notification icon, menu, startup registration and bounded diagnostics saved on request or normal exit. `SettingsDialogs` contains the two native dialogs.
-- `tray/NotificationIcon`: serializes Shell icon registration, version selection, updates, recreation and removal on a worker. Requests keep only the latest tooltip; no Shell call holds the request lock. Failed registration retries after two seconds without a UI timer. Shutdown joins before the icon's HWND/HICON are destroyed.
-- `core/Settings`: validated UTF-8 persistence and legacy import. Parsing has no UI callbacks and cannot overwrite another setting during initialization.
-- `core/Application`: UI-thread state, native shortcut window, coalesced focus events, a lightweight focus recovery timer, renderer choice and failure fallback. Inactive renderers are initialized only when needed.
-- `d3d/D3DOverlayRenderer`: worker-owned HWND, D3D immediate context and COM resources. Atomic commands wake a waitable event; a one-shot timer paces active capture. Visibility/target revisions invalidate obsolete work. An inactive worker blocks without periodic ticks, releases image buffers after five seconds, and retains its device/shaders for fast resume.
-- `magnification/MagnifierOverlay` and `MagnifierWorker`: compatibility renderer with worker-owned COM, Magnification API, windows, capture and painting. UI commands update a short locked request and wake an event; no Magnification call or paint runs under that lock. Revisions cancel obsolete startup/frames. Idle cleanup is asynchronous; full shutdown joins the worker. Hidden state guards queued timer messages; `SetTimer` is limited to a minimum interval of 10 ms and is stopped while hidden.
-- `window/FocusTracker`: out-of-process foreground, location and minimization WinEvents. It does not inject code or hook a drawing application's rendering pipeline.
+- `build/native/CSP-Grayscale-Viewer-Native-Portable.zip` with the GUI, optional console executable and license.
+- `Output/CSP-Grayscale-Viewer_Setup.exe`.
+- `build/native/SHA256SUMS.txt` for the generated packages.
 
-D3D keeps frames in GPU textures. `AcquireNextFrame(0)` does not block the UI; timeouts and cursor-only changes skip drawing unless a previous presentation needs retrying. `Present` uses `DXGI_PRESENT_DO_NOT_WAIT`. Capturing one output does not support a spanning window or rotated output in this implementation; those cases explicitly select Magnification. D3D requires Windows 10 2004 capture exclusion to prevent capturing its own overlay ([Microsoft API documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)).
+The package file list is explicit, so old Qt DLLs cannot enter the ZIP. Old DLLs may remain after an in-place installation upgrade, but the native executable does not load them.
 
-### First-frame visibility
+Merge the reviewed release change after CI passes, then tag that commit. The `Windows Release` tag workflow validates versions, rebuilds and tests Release, packages the binaries, and publishes the installer, ZIP, checksums and changelog notes. A manual workflow run saves the same assets without publishing a release. CI packages are rebuilt from the tag; their hashes can differ from local builds and must be checked against the checksums from that release.
 
-The first acquired duplication frame can contain **only a pointer update**, with `LastPresentTime=0` and `AccumulatedFrames=0`. The old path copied that resource whenever the crop was invalid or no frame had been captured yet. Local GPU readback reproduced an all-zero source texture, which the grayscale shader turned into opaque black. Waiting for successful presentation could not correct invalid image content. Cursor-only updates are now always released without copying; startup and resume wait for an actual desktop image. See [DXGI frame metadata](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_2/ns-dxgi1_2-dxgi_outdupl_frame_info).
+## Manual checks and remaining coverage
 
-`Present` success still means the frame was queued. The host starts transparent, becomes minimally visible (alpha 1/255) before the first valid submission, and becomes opaque after `WaitForCommitCompletion` and [DwmFlush](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmflush). The latter waits for the application's queued DirectX changes to be drawn. The worker checks cancellation before revealing. Alpha zero is unsuitable during preparation because DWM can skip the surface entirely. Normal frames retain the nonblocking presentation path.
-
-The previous 250 ms gate compared DXGI presentation counters. It produced false compatibility fallbacks on the user's other display and intermittently during the pixel test. Microsoft documents that [these statistics are unreliable in many multiple-monitor scenarios](https://learn.microsoft.com/en-us/windows/win32/api/dxgi/nf-dxgi-idxgiswapchain-getframestatistics); they no longer decide whether the first frame is ready. Actual composition errors still trigger fallback.
-
-The pixel regression samples only one point inside a test-owned window and temporarily disables capture exclusion on its own overlay so the composed result is observable. With the constant `(220,60,100)` source, the baseline exposed black pixels; after the capture fix, the first comparison observed grayscale `(112,112,112)` and no dark samples over 24 reveals. Each cycle must produce visible grayscale and remain within the source's expected luminance range. Separate windows cover each display's DPI, including negative coordinates; a maximized case covers the reported 3440×1440 geometry. The test also keeps cancellation checks at varied points around acquisition/composition. Run the built `csp_renderer_tests.exe --reveal` for this focused check. Physical appearance in the user's drawing application remains a manual confirmation.
-
-Final Release and Debug validation passed core regressions, both renderers, rapid hotkeys, idle/resource recovery and tray startup/diagnostic export. Across three displays (96/144/96 DPI) and the maximized case, the two builds completed **192 reveals and 3,011 pixel samples with no unexpected dark samples or fallback**. The maximized D3D shortcut handler stayed below 7 ms and the longest queued hotkey wait was 16 ms in both runs. Portable and installer packages were rebuilt from the tested Release executable.
-
-### Idle resume
-
-Rebuilding the device after every five-second idle period caused a noticeable delay. The renderer now releases desktop duplication when hiding and releases capture textures, swap-chain buffers and composition objects after five seconds. It clears context bindings and calls [IDXGIDevice3::Trim](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_3/nf-dxgi1_3-idxgidevice3-trim) to discard unused driver allocations. The device, context, shaders and sampler stay cached; no capture, rendering or periodic timer continues while idle. This retains some driver/device memory instead of fully unloading it. Explicit suspension, switching away from D3D, failure and shutdown release the device; display changes invalidate it, and capture initialization also checks for device removal.
-
-Run `scripts/test.ps1 -Configuration Release -ProfileRenderers` to print device, shader, composition and duplication setup timings plus initial/resume latency. On the same local machine, the instrumented baseline took **189.8 ms** to resume after idle, including **142.1 ms** for device creation. With the cache, the first comparison took **47.6 ms**, with no new device or shader creation. First-frame composition waits were similar (**26 ms** before, **27 ms** after), so the black-flash guard was retained. These are individual test-window samples, including up to one polling interval of observation delay; they are not physical display latency or guarantees for all drivers/window sizes. First activation after process launch still initializes the device on demand.
-
-Final validation passed the core suite, renderer integration tests and tray startup smoke test in both Release and Debug, with no compiler warnings. Final idle-resume samples were **31.6 ms** (Release) and **48.4 ms** (Debug). The display-change test forces a replacement device and verifies successful presentation; shutdown verifies both the cache and image buffers are released. Portable and installer packages were rebuilt from the tested Release binaries.
-
-### Embedded icons
-
-The supplied SVG pack and unchanged PNG exports live in `resources/icons`. The full tile is embedded in the executable and used by settings dialogs and the installer; the transparent symbol is the notification icon. Multi-size ICO files are generated with `scripts/build-icons.ps1`, with no added runtime image library. See [icon sources](../resources/icons/README.md).
-
-### Rapid shortcuts and maximized windows
-
-The affected user's log established a false compatibility fallback: a maximized window reported DWM bounds `(-8,-8)-(3448,1448)` on output `(0,0)-(3440,1440)`, with orientation zero and successful display queries. The containment check treated its hidden sizing border as another display. `window/WindowGeometry` now clips only maximized overflow within the window DPI's Windows sizing-border metrics. Renderer selection and both renderers use those same visible bounds. Restored windows, larger overflows and rotated outputs still retain the compatibility checks. Tests cover the exact reported geometry, scaled borders and negative output coordinates, and verify that the rendered host has no eight-pixel offset.
-
-Moving Magnification to a worker fixed its synchronous initialization stall, but the small-window checks missed a second source of blocking. The next physical reproduction still showed **12 queue delays of 78–125 ms**. Repeating the integration with a **3440×1440 animated target** reproduced a **231.8 ms** shortcut-handler stall even on Direct3D. Instrumentation identified synchronous `Shell_NotifyIcon` updates repeatedly taking about **200–233 ms** on the UI thread. Icon operations now run on a worker and coalesce pending states, including registration/recreation and removal. A deliberately blocked fake Shell call verifies that UI requests return promptly, intermediate tooltips are discarded, and registration/version/update/delete ordering survives recreation and shutdown.
-
-In the first large-window comparison after this fix, the maximum Direct3D handler duration was **4.7 ms**, mean short-pause activation was **19.0 ms**, and the longest queued hotkey wait was **16 ms**. The Shell call still took up to **250 ms** in the background. Magnification measured **2.1 ms** maximum handler time and **16 ms** queue wait with a **266 ms** background Shell call. Its approximately **80 ms** activation includes the three-update transparent warm-up; this is not comparable with older tests that reported active at alpha 1/255. All numbers are local observations, not physical keyboard-to-display latency guarantees.
-
-Integration now exercises both backends at small and maximized sizes: 101 individual hotkey messages, ten delayed taps posted by a separate producer during capture, and 100 bursts of 21 messages with final requested/rendered-state checks. Handler and queued-message waits must stay below 100 ms. It uses the production icon worker with a temporary icon and waits for its final state to converge. Tests also retain automatic geometry fallback/recovery, transparent first frames, warm-up cancellation, stale timers, resource release and restart. A foreground provider targets only the test window; desktop focus is unchanged and no global keyboard events are injected. Physical F9 behavior in the actual drawing application still requires user confirmation.
-
-Final Release and Debug runs passed core regressions, both sizes/backends, and tray startup/diagnostic-export smoke tests with no compiler warnings. The final maximized Direct3D handler maxima were **4.8 ms** and **4.7 ms**, respectively; both recorded a **16 ms** maximum hotkey queue wait. The portable ZIP and installer were rebuilt from the tested Release binaries. Installer execution and physical F9 remain manual checks.
-
-Diagnostics record millisecond local timestamps, received shortcut sequence numbers, registration changes, preview states, slow UI dispatches and queue waits of at least 50 ms. Fallback lines include bounds, orientation, maximized state and display-query results; normalized maximum bounds are logged when selecting a renderer. Shutdown records the longest background Shell call. The last 1,000 lines are kept in memory and saved beside the active settings file as `diagnostics.log` on normal exit or `Open diagnostics`. The smoke check verifies timestamped export. Received-event counts alone cannot establish how many physical presses Windows delivered. No per-key disk writes or general keyboard monitoring are used.
-
-## Focus recovery and executable identity
-
-The native rewrite removed the original Qt application's 250 ms focus synchronization timer. With only WinEvent notifications, an activation transition that temporarily reads no foreground, a missed event, or a target becoming visible after evaluation could leave the target-only shortcut unregistered indefinitely. A core regression withholds focus notifications and dispatches only real timer messages while an injected foreground provider returns a test-owned window. Before the fix it failed to register after 1.5 seconds.
-
-WinEvents remain the immediate path. A 250 ms timer now checks foreground/root handles and visibility/minimization. Stable target focus skips process lookup, renderer selection and capture work. Unresolved process identification and shortcut conflicts retry at one-second intervals; focus-only and suspension rules still apply. Core tests cover lost entry/exit notifications, transient null foreground, hide/show, minimize/restore, suspension and conflict release. Integration tests also verify that both shortcut registration and visible preview recover for both renderers at small and maximized sizes. They do not inject physical keys or change the user's foreground application.
-
-The October 20 report also exposed a deployment mismatch: Windows startup still launched the installed October 18 early-morning executable, while later tested builds were in the workspace. That installed executable lacked the later shortcut diagnostics, background icon updates and first-frame fixes. This establishes which build produced the report; the sparse old log cannot prove which focus transition occurred in CSP. Diagnostics now always begin with the running executable path, compile time and settings path, outside the bounded event history. Smoke tests verify this identity along with timestamped export.
-
-Release completed the full core, renderer and startup/export suite. Debug passed core, both renderer/size combinations and all focus recoveries, then passed startup/export and the final pixel checks. The two configurations verified 24 focus recoveries; the final pixel runs completed 192 reveals and 3,002 samples without unexpected pixels. The reused maximized test window initially failed the ownership check because it did not retain topmost status. The pixel harness now creates a separate initially-topmost maximized window and still checks ownership before every sample; `--reveal-maximized` runs this case alone. These tests do not establish physical F9 behavior inside CSP.
-
-## Manual release checks
-
-- Confirm left click, right click, keyboard navigation, both dialogs, physical F9 and modified shortcuts, conflicting bindings, and focus-only behavior in CSP.
-- Check drawing with a pen/mouse, popups, Alt-Tab, minimize/restore, rapid toggles and renderer changes. Confirm correct grayscale pixels and no stale frame flash.
-- Check monitor changes, negative coordinates, mixed DPI, rotated screens, spanning windows, multiple GPUs, sleep/resume, lock/unlock and Explorer restart.
-- Check HDR and remote sessions separately. Protected content may remain unavailable even in compatibility mode.
-- Check settings migration using a copy of the old file, startup registration, reinstall and portable relocation. Startup paths must be updated through the menu after moving the executable.
-
-After testing Release, run `scripts/package.ps1` for the portable ZIP or add `-Installer` to also compile `installer.iss` with Inno Setup 6. The script and release workflow use an explicit GUI/console/license file list and cannot pick up leftover Qt deployment files. Existing Qt DLLs from an older installation may remain on disk after an in-place upgrade, but the native executable does not load them.
+- Tray/menu navigation, dialogs, physical shortcuts and focus changes in CSP and other target applications.
+- Pen/mouse input, popups, rapid toggles, resize, Alt-Tab and minimize/restore.
+- Mixed DPI, negative display coordinates, rotation, spanning windows, display changes, lock/unlock, sleep/resume and Explorer restart.
+- HDR, protected content, remote sessions and multiple GPUs on the relevant hardware.
+- Upgrade/migration, installation, portable relocation and Windows startup. After moving a portable executable, toggle startup off and on from its new location.
