@@ -8,7 +8,8 @@ permissions:
   contents: read
 jobs:
   build:
-    runs-on: windows-latest
+    # Matches the Visual Studio 2022 generator in CMakePresets.json.
+    runs-on: windows-2022
     strategy:
       matrix:
         configuration: [Release, Debug]

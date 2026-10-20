@@ -7,7 +7,8 @@ permissions:
   contents: write
 jobs:
   release:
-    runs-on: windows-latest
+    # Matches the Visual Studio 2022 generator in CMakePresets.json.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
       - name: Validate version and prepare release notes

@@ -15,7 +15,7 @@ Requires Windows 10/11 x64, Visual Studio 2022 with Desktop development with C++
 .\scripts\test.ps1 -Configuration Debug -Smoke
 ```
 
-The script configures the `windows` CMake preset, builds, and runs CTest. `-Smoke` launches a separate settings profile under `build/native/smoke`, exits after 1.5 seconds, and checks diagnostic identity and timestamps. It does not inspect menu/dialog appearance. GitHub CI runs these checks for both configurations.
+The script configures the `windows` CMake preset, builds, and runs CTest. `-Smoke` launches a separate settings profile under `build/native/smoke`, exits after 1.5 seconds, and checks diagnostic identity and timestamps. It does not inspect menu/dialog appearance. GitHub CI runs these checks for both configurations. CI and release jobs use `windows-2022` to match the Visual Studio 2022 generator; changing the runner requires checking its installed toolchain.
 
 Core coverage includes settings round trips and migration, invalid-input handling, atomic UTF-8 saves, shortcut parsing/routing/conflicts, suspension, missed focus notifications, hide/show and minimize/restore, display geometry, refresh limits, and background notification-icon updates.
 
