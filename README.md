@@ -53,6 +53,10 @@ See [testing and architecture notes](docs/testing.md) for Debug, desktop rendere
 
 ## Demo and license
 
+Native system tray menu in v1.1.0:
+
+![Native system tray menu](demo/tray-menu.png)
+
 ![Grayscale preview demo](demo/demo.gif)
 
 The demo shows the preview effect; its settings UI predates the native tray version.
